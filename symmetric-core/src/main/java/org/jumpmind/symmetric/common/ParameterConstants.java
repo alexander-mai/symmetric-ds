@@ -377,7 +377,7 @@ final public class ParameterConstants {
     public final static String MSSQL_BULK_LOAD_USE_BCP = "mssql.bulk.load.use.bcp";
     public final static String MSSQL_BULK_LOAD_BCP_CMD = "mssql.bulk.load.bcp.cmd";
     public final static String MSSQL_USE_SNAPSHOT_ISOLATION = "mssql.use.snapshot.isolation";
-    public final static String DBDIALECT_SYBASE_ASE_USE_UNITYPES_FOR_SYNC = "sybase.ase.use.unitypes.for.sync";
+    public final static String DBDIALECT_SYBASE_ASE_CONVERT_UNITYPES_FOR_SYNC = "sybase.ase.convert.unitypes.for.sync";
     public final static String SYBASE_ROW_LEVEL_LOCKS_ONLY = "sybase.allow.only.row.level.locks.on.runtime.tables";
     public final static String SYBASE_CHANGE_IDENTITY_GAP = "sybase.change.identity.gap.on.runtime.tables";
     public final static String SQLITE_TRIGGER_FUNCTION_TO_USE = "sqlite.trigger.function.to.use";
@@ -494,6 +494,7 @@ final public class ParameterConstants {
     public final static String OPENSEARCH_LOAD_AWS_SECRET_KEY = "opensearch.load.aws.secret.key";
     public final static String S3_LOAD_AWS_ACCESS_KEY = "s3.load.aws.access.key";
     public final static String S3_LOAD_AWS_SECRET_KEY = "s3.load.aws.secret.key";
+    public final static String S3_LOAD_FORMAT = "s3.load.format";
     public final static String SINGLESTORE_AUDIT_LOG_DIR = "single.store.audit.log.dir";
     public final static String SPATIAL_TYPES_ENABLED = "spatial.data.types.enabled";
     public final static String DEFAULT_VALUES_TO_LEAVE_UNQUOTED = "default.values.to.leave.unquoted";

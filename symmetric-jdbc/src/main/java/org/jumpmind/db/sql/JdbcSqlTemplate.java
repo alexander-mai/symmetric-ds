@@ -616,6 +616,9 @@ public class JdbcSqlTemplate extends AbstractSqlTemplate implements ISqlTemplate
             }
         } else if (jdbcTypeName != null && "oid".equals(jdbcTypeName)) {
             obj = PostgresLobHandler.getLoColumnAsBytes(rs, index);
+        } else if (jdbcTypeName != null && (jdbcTypeName.equals("unitext") || jdbcTypeName.equals("unichar")
+                || jdbcTypeName.equals("univarchar"))) {
+            obj = rs.getBytes(index);
         }
         return obj;
     }
