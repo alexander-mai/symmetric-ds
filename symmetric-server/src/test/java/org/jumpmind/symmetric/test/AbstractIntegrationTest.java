@@ -89,9 +89,13 @@ public abstract class AbstractIntegrationTest {
                         new URL[] { TestSetupUtil.getResource(DbTestUtils.DB_TEST_PROPERTIES),
                                 TestSetupUtil.getResource("/symmetric-test.properties") },
                         "test.root", new String[] { "root" });
-                properties.setProperty(ParameterConstants.AUTO_CONFIGURE_REG_SVR_SQL_SCRIPT,
-                        "/test-integration-root-setup.sql");
                 serverDatabase = properties.getProperty("test.root");
+                String additionalScriptSql = "";
+                if ("ase".equals(serverDatabase)) {
+                    additionalScriptSql = ",/override-ase-transaction-id.sql";
+                }
+                properties.setProperty(ParameterConstants.AUTO_CONFIGURE_REG_SVR_SQL_SCRIPT,
+                        "/test-integration-root-setup.sql" + additionalScriptSql);
                 File rootDir = new File("target/root");
                 FileUtils.deleteDirectory(rootDir);
                 rootDir.mkdirs();
@@ -185,7 +189,8 @@ public abstract class AbstractIntegrationTest {
 
     protected boolean isServerOracle() {
         return DatabaseNamesConstants.ORACLE.equals(getServer().getSymmetricDialect().getPlatform().getName()) ||
-                DatabaseNamesConstants.ORACLE122.equals(getServer().getSymmetricDialect().getPlatform().getName());
+                DatabaseNamesConstants.ORACLE122.equals(getServer().getSymmetricDialect().getPlatform().getName()) ||
+                DatabaseNamesConstants.ORACLE23.equals(getServer().getSymmetricDialect().getPlatform().getName());
     }
 
     protected boolean isClientInterbase() {

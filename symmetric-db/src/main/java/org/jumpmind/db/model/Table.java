@@ -666,6 +666,16 @@ public class Table implements Serializable, Cloneable, Comparable<Table> {
         return false;
     }
 
+    public boolean hasGeneratedColumns() {
+        for (Iterator<Column> it = columns.iterator(); it.hasNext();) {
+            Column column = (Column) it.next();
+            if (column.isGenerated()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * Finds the column with the specified name, using case insensitive matching. Note that this method is not called getColumn(String) to avoid introspection
      * problems.
@@ -1039,7 +1049,7 @@ public class Table implements Serializable, Cloneable, Comparable<Table> {
     }
 
     public String getTableKey() {
-        return getFullyQualifiedTableName() + "-" + calculateTableHashcode();
+        return getFullyQualifiedTableName() + "-" + calculateTableLiteHashcode();
     }
 
     public boolean containsLobColumns(IDatabasePlatform platform) {
@@ -1078,6 +1088,10 @@ public class Table implements Serializable, Cloneable, Comparable<Table> {
             fullyQualifiedTableNameLowerCase = getFullyQualifiedTableName().toLowerCase();
         }
         return fullyQualifiedTableNameLowerCase;
+    }
+
+    public String getFullyQualifiedTableName(String quote) {
+        return getFullyQualifiedTableName(catalog, schema, name, quote, ".", ".");
     }
 
     public String getNameLowerCase() {
@@ -1351,7 +1365,9 @@ public class Table implements Serializable, Cloneable, Comparable<Table> {
                     if (column != null) {
                         for (String pkColumnName : pkColumnNames) {
                             if (column.getName().equalsIgnoreCase(pkColumnName)) {
+                                boolean required = column.isRequired();
                                 column.setPrimaryKey(true);
+                                column.setRequired(required);
                             }
                         }
                     }
@@ -1419,20 +1435,28 @@ public class Table implements Serializable, Cloneable, Comparable<Table> {
     }
 
     public int calculateTableHashcode() {
+        return calculateTableHashcode(true);
+    }
+
+    public int calculateTableLiteHashcode() {
+        return calculateTableHashcode(false);
+    }
+
+    protected int calculateTableHashcode(boolean includeTypes) {
         final int PRIME = 31;
         int result = 1;
         result = PRIME * result + name.hashCode();
-        result = PRIME * result + calculateHashcodeForColumns(PRIME, getColumns());
-        result = PRIME * result + calculateHashcodeForColumns(PRIME, getPrimaryKeyColumns());
+        result = PRIME * result + calculateHashcodeForColumns(PRIME, getColumns(), includeTypes);
+        result = PRIME * result + calculateHashcodeForColumns(PRIME, getPrimaryKeyColumns(), includeTypes);
         return result;
     }
 
-    private static int calculateHashcodeForColumns(final int PRIME, Column[] cols) {
+    private static int calculateHashcodeForColumns(final int PRIME, Column[] cols, boolean includeTypes) {
         int result = 1;
         if (cols != null && cols.length > 0) {
             for (Column column : cols) {
                 result = PRIME * result + column.getName().hashCode();
-                if (column.getMappedType() != null) {
+                if (includeTypes && column.getMappedType() != null) {
                     result = PRIME * result + column.getMappedType().hashCode();
                 }
                 result = PRIME * result + column.getSizeAsInt();

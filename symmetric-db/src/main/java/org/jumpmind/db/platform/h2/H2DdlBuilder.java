@@ -46,6 +46,7 @@ package org.jumpmind.db.platform.h2;
 import java.sql.Types;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
 import org.jumpmind.db.alter.AddColumnChange;
@@ -62,6 +63,7 @@ import org.jumpmind.db.model.ColumnTypes;
 import org.jumpmind.db.model.Database;
 import org.jumpmind.db.model.IIndex;
 import org.jumpmind.db.model.ModelException;
+import org.jumpmind.db.model.PlatformColumn;
 import org.jumpmind.db.model.Table;
 import org.jumpmind.db.platform.AbstractDdlBuilder;
 import org.jumpmind.db.platform.DatabaseNamesConstants;
@@ -77,7 +79,6 @@ public class H2DdlBuilder extends AbstractDdlBuilder {
         databaseInfo.setNonPKIdentityColumnsSupported(false);
         databaseInfo.setIdentityOverrideAllowed(false);
         databaseInfo.setSystemForeignKeyIndicesAlwaysNonUnique(true);
-        databaseInfo.setNullAsDefaultValueRequired(false);
         databaseInfo.addNativeTypeMapping(Types.ARRAY, "BINARY", Types.BINARY);
         databaseInfo.addNativeTypeMapping(Types.DISTINCT, "BINARY", Types.BINARY);
         databaseInfo.addNativeTypeMapping(Types.NULL, "BINARY", Types.BINARY);
@@ -106,6 +107,8 @@ public class H2DdlBuilder extends AbstractDdlBuilder {
         databaseInfo.setEmptyStringNulled(false);
         databaseInfo.setNullAsDefaultValueRequired(true);
         databaseInfo.setGeneratedColumnsSupported(true);
+        databaseInfo.setBinaryQuoteStart("X'");
+        databaseInfo.setBinaryQuoteEnd("'");
     }
 
     @Override
@@ -283,5 +286,19 @@ public class H2DdlBuilder extends AbstractDdlBuilder {
 
     public void setVersion2(boolean isVersion2) {
         this.isVersion2 = isVersion2;
+    }
+
+    @Override
+    public String getSqlType(Column column) {
+        String type = super.getSqlType(column);
+        if (column.getPlatformColumns() != null) {
+            for (Map.Entry<String, PlatformColumn> platformColumn : column.getPlatformColumns().entrySet()) {
+                if (platformColumn.getValue() != null && platformColumn.getValue().getType() != null &&
+                        platformColumn.getValue().getType().equals("UUID")) {
+                    return "UUID";
+                }
+            }
+        }
+        return type;
     }
 }

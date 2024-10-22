@@ -32,6 +32,7 @@ import java.util.Set;
 
 import org.jumpmind.symmetric.ISymmetricEngine;
 import org.jumpmind.symmetric.common.ParameterConstants;
+import org.jumpmind.symmetric.ext.IBatchStagingExtension;
 import org.jumpmind.symmetric.model.BatchId;
 import org.jumpmind.symmetric.service.ClusterConstants;
 import org.slf4j.Logger;
@@ -90,6 +91,11 @@ public class BatchStagingManager extends StagingManager {
             context.putContextValue("outgoingBatches", outgoingBatches);
             context.putContextValue("incomingBatches", incomingBatches);
             context.putContextValue("biggestIncomingByNode", biggestIncomingByNode);
+            IBatchStagingExtension ext = engine.getExtensionService().getExtensionPoint(IBatchStagingExtension.class);
+            if (ext != null) {
+                context.putContextValue("extension", ext);
+                ext.beforeClean(context);
+            }
             return super.clean(ttlInMs, context);
         } finally {
             if (isLockAcquired) {
@@ -119,7 +125,12 @@ public class BatchStagingManager extends StagingManager {
         } else if (path[0].equals(STAGING_CATEGORY_BULK_LOAD)) {
             return false;
         } else {
-            log.warn("Unrecognized path: " + resource.getPath());
+            IBatchStagingExtension ext = (IBatchStagingExtension) context.getContextValue("extension");
+            if (ext != null && ext.isValidPath(path[0])) {
+                return ext.shouldCleanPath(resource, ttlInMs, context, path, resourceIsOld, resourceClearsMinTimeHurdle);
+            } else {
+                log.warn("Unrecognized path: " + resource.getPath());
+            }
         }
         return false;
     }
@@ -129,7 +140,7 @@ public class BatchStagingManager extends StagingManager {
         @SuppressWarnings("unchecked")
         Set<Long> outgoingBatches = (Set<Long>) context.getContextValue("outgoingBatches");
         try {
-            Long batchId = Long.valueOf(path[path.length - 1]);
+            Long batchId = Long.valueOf(path[path.length - 1].replace("_filesync", ""));
             if ((resourceClearsMinTimeHurdle && !outgoingBatches.contains(batchId)) || ttlInMs == 0) {
                 return true;
             }
@@ -149,7 +160,7 @@ public class BatchStagingManager extends StagingManager {
         Map<String, Long> biggestIncomingByNode = (Map<String, Long>) context.getContextValue("biggestIncomingByNode");
         boolean recordIncomingBatchesEnabled = context.getBoolean("recordIncomingBatchesEnabled");
         try {
-            BatchId batchId = new BatchId(Long.valueOf(path[path.length - 1]), path[1]);
+            BatchId batchId = new BatchId(Long.valueOf(path[path.length - 1].replace("_filesync", "")), path[1]);
             Long biggestBatchId = biggestIncomingByNode.get(batchId.getNodeId());
             if ((recordIncomingBatchesEnabled && resourceClearsMinTimeHurdle && biggestBatchId != null
                     && biggestBatchId > batchId.getBatchId() && !incomingBatches.contains(batchId))

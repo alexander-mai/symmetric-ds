@@ -47,11 +47,13 @@ import javax.sql.DataSource;
 
 import org.apache.commons.lang3.StringUtils;
 import org.jumpmind.db.model.Column;
+import org.jumpmind.db.model.ColumnTypes;
 import org.jumpmind.db.model.Database;
-import org.jumpmind.db.model.Transaction;
 import org.jumpmind.db.model.Table;
+import org.jumpmind.db.model.Transaction;
 import org.jumpmind.db.model.TypeMap;
 import org.jumpmind.db.platform.AbstractJdbcDatabasePlatform;
+import org.jumpmind.db.platform.DatabaseInfo;
 import org.jumpmind.db.platform.DatabaseNamesConstants;
 import org.jumpmind.db.platform.PermissionResult;
 import org.jumpmind.db.platform.PermissionResult.Status;
@@ -60,7 +62,7 @@ import org.jumpmind.db.sql.ISqlTemplate;
 import org.jumpmind.db.sql.Row;
 import org.jumpmind.db.sql.SqlException;
 import org.jumpmind.db.sql.SqlTemplateSettings;
-import org.jumpmind.util.AbstractVersion;
+import org.jumpmind.util.VersionUtil;
 
 /*
  * The platform implementation for MySQL.
@@ -78,6 +80,18 @@ public class MySqlDatabasePlatform extends AbstractJdbcDatabasePlatform {
      */
     public MySqlDatabasePlatform(DataSource dataSource, SqlTemplateSettings settings) {
         super(dataSource, overrideSettings(settings));
+        String versionString = getSqlTemplate().getDatabaseProductVersion();
+        if (VersionUtil.isOlderThanVersion(versionString, "8.0")) {
+            ddlBuilder.getDatabaseInfo().setCanDeleteUsingExists(false);
+        }
+        if (VersionUtil.isOlderThanVersion(versionString, "5.6")) {
+            DatabaseInfo databaseInfo = ddlBuilder.getDatabaseInfo();
+            databaseInfo.setHasSize(Types.TIMESTAMP, false);
+            databaseInfo.setHasSize(ColumnTypes.TIMESTAMPTZ, false);
+            databaseInfo.setHasSize(ColumnTypes.TIMESTAMPLTZ, false);
+            databaseInfo.setHasSize(Types.TIME, false);
+            databaseInfo.setHasSize(ColumnTypes.TIMETZ, false);
+        }
     }
 
     @Override
@@ -126,13 +140,7 @@ public class MySqlDatabasePlatform extends AbstractJdbcDatabasePlatform {
         String createSql = ddlBuilder.createTables(database, false);
         PermissionResult result = new PermissionResult(PermissionType.CREATE_TABLE, createSql);
         String versionString = getSqlTemplate().getDatabaseProductVersion();
-        AbstractVersion version = new AbstractVersion() {
-            @Override
-            protected String getArtifactName() {
-                return null;
-            }
-        };
-        if (!version.isOlderThanVersion(versionString, "5.1.5")) {
+        if (!VersionUtil.isOlderThanVersion(versionString, "5.1.5")) {
             String defaultEngine = getSqlTemplate()
                     .queryForString("select engine from information_schema.engines where support='DEFAULT';");
             if (!StringUtils.equalsIgnoreCase(defaultEngine, "innodb")) {
@@ -225,7 +233,8 @@ public class MySqlDatabasePlatform extends AbstractJdbcDatabasePlatform {
                 try {
                     if (column.getMappedTypeCode() == Types.DATE
                             && column.findPlatformColumn(DatabaseNamesConstants.ORACLE) != null
-                            && column.findPlatformColumn(DatabaseNamesConstants.ORACLE122) != null) {
+                            && column.findPlatformColumn(DatabaseNamesConstants.ORACLE122) != null
+                            && column.findPlatformColumn(DatabaseNamesConstants.ORACLE23) != null) {
                         column.setMappedType(TypeMap.TIMESTAMP);
                         column.setMappedTypeCode(Types.TIMESTAMP);
                         column.setScale(6);

@@ -138,6 +138,14 @@ public class WrapperConfig {
     }
 
     public String getJavaCommand() {
+        String javaCmd = getProperty(prop, "wrapper.java.command", "java");
+        if (javaCmd.toLowerCase().endsWith("service.exe")) {
+            javaCmd = System.getProperty("java.home") + File.separator + "bin" + File.separator + "javaw.exe";
+        }
+        return javaCmd;
+    }
+
+    public String getServiceCommand() {
         return getProperty(prop, "wrapper.java.command", "java");
     }
 
@@ -163,6 +171,10 @@ public class WrapperConfig {
 
     public String getApplicationOutputRestart() {
         return getProperty(prop, "wrapper.app.output.restart", "");
+    }
+
+    public String getMaxMemory() {
+        return getProperty(prop, "wrapper.java.maxmemory", "256");
     }
 
     public ArrayList<String> getCommand(boolean isConsole) {

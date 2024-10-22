@@ -43,6 +43,7 @@ final public class DatabaseNamesConstants {
     public final static String MSSQLAZURE = "mssqlazure";
     public final static String ORACLE = "oracle";
     public final static String ORACLE122 = "oracle122";
+    public final static String ORACLE23 = "oracle23";
     public final static String MYSQL = "mysql";
     public final static String DB2 = "db2";
     public final static String DB2ZOS = "db2zos";
@@ -61,6 +62,7 @@ final public class DatabaseNamesConstants {
     public final static String TERADATA = "teradata";
     public final static String CASSANDRA = "cassandra";
     public final static String KAFKA = "kafka";
+    public final static String RABBITMQ = "rabbitmq";
     public final static String SNOWFLAKE = "snowflake";
     public final static String HBASE = "hbase";
     public final static String BIGQUERY = "bigquery";

@@ -51,8 +51,8 @@ import org.jumpmind.db.sql.ISqlTemplate;
 import org.jumpmind.db.sql.ISqlTransaction;
 import org.jumpmind.db.sql.Row;
 import org.jumpmind.db.sql.SqlScript;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 public class DatabasePlatformTest {
@@ -139,6 +139,22 @@ public class DatabasePlatformTest {
     }
 
     @Test
+    public void testChangeNotNullToNullColumn() throws Exception {
+        Table table = new Table("TEST_NULL_DEFAULT");
+        table.addColumn(new Column("ID1", true));
+        table.getColumnWithName("ID1").setTypeCode(Types.INTEGER);
+        table.getColumnWithName("ID1").setRequired(true);
+        table.addColumn(new Column("ANUM"));
+        table.getColumnWithName("ANUM").setTypeCode(Types.INTEGER);
+        table.getColumnWithName("ANUM").setRequired(true);
+        dropCreateAndThenReadTable(table);
+        table.getColumnWithName("ANUM").setRequired(false);
+        platform.alterTables(false, table);
+        Table tableFromDatabase = platform.getTableFromCache(table.getName(), true);
+        assertFalse(tableFromDatabase.getColumnWithName("ANUM").isRequired());
+    }
+
+    @Test
     public void testExportDefaultValueWithUnderscores() {
         Table table = new Table("TEST_DEFAULT_UNDERSCORES");
         table.addColumn(new Column("ID", true));
@@ -207,6 +223,13 @@ public class DatabasePlatformTest {
             table.getColumnWithName("NOTES").setTypeCode(Types.VARCHAR);
             table.getColumnWithName("NOTES").setSize("100");
             Table tableFromDatabase = dropCreateAndThenReadTable(table);
+            ISqlTransaction transaction = null;
+            ISqlTemplate template = platform.getSqlTemplate();
+            transaction = template.startSqlTransaction();
+            transaction.execute("CREATE SEQUENCE TEST_UPGRADE_ID_SEQ START WITH 1 INCREMENT BY 1;");
+            transaction.execute("CALL NEXTVAL('TEST_UPGRADE_ID_SEQ')");
+            transaction.commit();
+            transaction.close();
             assertNotNull(tableFromDatabase);
             assertTrue(tableFromDatabase.getColumnWithName("ID").isPrimaryKey());
             String insertSql = "insert into \"TEST_UPGRADE\" (\"ID\",\"NOTES\") values(null,?)";
@@ -222,6 +245,10 @@ public class DatabasePlatformTest {
             tableFromDatabase = platform.getTableFromCache(table.getName(), true);
             assertEquals(Types.BIGINT, table.getColumnWithName("ID").getMappedTypeCode());
             assertTrue(tableFromDatabase.getColumnWithName("ID").isPrimaryKey());
+            transaction = template.startSqlTransaction();
+            transaction.execute("CALL NEXTVAL('TEST_UPGRADE_ID_SEQ')");
+            transaction.commit();
+            transaction.close();
             long id2 = platform.getSqlTemplate()
                     .insertWithGeneratedKey(insertSql, "ID", getSequenceName(platform),
                             new Object[] { "test" }, new int[] { Types.VARCHAR });
@@ -230,7 +257,8 @@ public class DatabasePlatformTest {
     }
 
     protected String getSequenceName(IDatabasePlatform platform) {
-        if (platform.getName().equals(DatabaseNamesConstants.ORACLE) || platform.getName().equals(DatabaseNamesConstants.ORACLE122)) {
+        if (platform.getName().equals(DatabaseNamesConstants.ORACLE) || platform.getName().equals(DatabaseNamesConstants.ORACLE122) || platform.getName()
+                .equals(DatabaseNamesConstants.ORACLE23)) {
             return "TEST_UPGRADE_ID";
         } else if (platform.getName().equals(DatabaseNamesConstants.INTERBASE)) {
             return "SEQ_TEST_UPGRADE_ID";

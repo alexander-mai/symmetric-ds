@@ -20,6 +20,7 @@
  */
 package org.jumpmind.symmetric.cache;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
@@ -29,13 +30,11 @@ import org.jumpmind.symmetric.model.FileTriggerRouter;
 import org.jumpmind.symmetric.model.Grouplet;
 import org.jumpmind.symmetric.model.LoadFilter;
 import org.jumpmind.symmetric.model.LoadFilter.LoadFilterType;
-import org.jumpmind.symmetric.model.Monitor;
 import org.jumpmind.symmetric.model.Node;
 import org.jumpmind.symmetric.model.NodeChannel;
 import org.jumpmind.symmetric.model.NodeGroupChannelWindow;
 import org.jumpmind.symmetric.model.NodeGroupLink;
 import org.jumpmind.symmetric.model.NodeGroupLinkAction;
-import org.jumpmind.symmetric.model.Notification;
 import org.jumpmind.symmetric.model.Router;
 import org.jumpmind.symmetric.model.Trigger;
 import org.jumpmind.symmetric.model.TriggerRouter;
@@ -79,6 +78,8 @@ public interface ICacheManager {
 
     public List<Node> getTargetNodesCache(NodeGroupLinkAction eventAction, Node node);
 
+    public Collection<Node> getNodesByGroup(String nodeGroupId);
+
     public void flushSourceNodesCache();
 
     public void flushTargetNodesCache();
@@ -117,16 +118,6 @@ public interface ICacheManager {
             boolean useCache);
 
     public void flushLoadFilters();
-
-    public List<Monitor> getActiveMonitorsForNode(String nodeGroupId, String externalId);
-
-    public List<Monitor> getActiveMonitorsUnresolvedForNode(String nodeGroupId, String externalId);
-
-    public void flushMonitorCache();
-
-    public List<Notification> getActiveNotificationsForNode(String nodeGroupId, String externalId);
-
-    public void flushNotificationCache();
 
     public Map<NodeGroupLink, Map<TransformPoint, List<TransformTableNodeGroupLink>>> getTransformCache();
 

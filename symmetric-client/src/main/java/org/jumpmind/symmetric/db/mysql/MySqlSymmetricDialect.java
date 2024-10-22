@@ -22,8 +22,11 @@ package org.jumpmind.symmetric.db.mysql;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
+import org.jumpmind.db.model.Column;
+import org.jumpmind.db.model.Database;
 import org.jumpmind.db.model.Table;
 import org.jumpmind.db.platform.DatabaseNamesConstants;
 import org.jumpmind.db.platform.IDatabasePlatform;
@@ -31,11 +34,13 @@ import org.jumpmind.db.platform.PermissionType;
 import org.jumpmind.db.sql.ISqlTransaction;
 import org.jumpmind.db.sql.JdbcSqlTransaction;
 import org.jumpmind.db.sql.SqlException;
+import org.jumpmind.db.sql.mapper.StringMapper;
 import org.jumpmind.db.util.BasicDataSourcePropertyConstants;
 import org.jumpmind.db.util.BinaryEncoding;
 import org.jumpmind.symmetric.SymmetricException;
 import org.jumpmind.symmetric.Version;
 import org.jumpmind.symmetric.common.ParameterConstants;
+import org.jumpmind.symmetric.common.TableConstants;
 import org.jumpmind.symmetric.db.AbstractSymmetricDialect;
 import org.jumpmind.symmetric.db.ISymmetricDialect;
 import org.jumpmind.symmetric.db.SequenceIdentifier;
@@ -101,7 +106,7 @@ public class MySqlSymmetricDialect extends AbstractSymmetricDialect implements I
     }
 
     @Override
-    public void createRequiredDatabaseObjects() {
+    public void createRequiredDatabaseObjectsImpl(StringBuilder ddl) {
         String function = null;
         String functionBody = null;
         String sql = null;
@@ -156,9 +161,9 @@ public class MySqlSymmetricDialect extends AbstractSymmetricDialect implements I
         }
         if (!functionEquals(SQL_FUNCTION_EQUALS, function, functionBody)) {
             if (installed(SQL_FUNCTION_INSTALLED, function)) {
-                uninstall(SQL_DROP_FUNCTION, function);
+                uninstall(SQL_DROP_FUNCTION, function, ddl);
             }
-            install(sql, function);
+            install(sql, function, ddl);
         }
     }
 
@@ -181,7 +186,7 @@ public class MySqlSymmetricDialect extends AbstractSymmetricDialect implements I
     }
 
     @Override
-    protected boolean doesTriggerExistOnPlatform(String catalog, String schema, String tableName,
+    protected boolean doesTriggerExistOnPlatform(StringBuilder sqlBuffer, String catalog, String schema, String tableName,
             String triggerName) {
         catalog = catalog == null ? (platform.getDefaultCatalog() == null ? null
                 : platform
@@ -206,7 +211,7 @@ public class MySqlSymmetricDialect extends AbstractSymmetricDialect implements I
             sql = "drop trigger " + catalogPrefix + triggerName;
         }
         logSql(sql, sqlBuffer);
-        if (parameterService.is(ParameterConstants.AUTO_SYNC_TRIGGERS)) {
+        if (parameterService.is(ParameterConstants.AUTO_SYNC_TRIGGERS) && sqlBuffer == null) {
             log.info("Dropping {} trigger for {}", triggerName, Table.getFullyQualifiedTableName(catalogName, schemaName, tableName));
             transaction.execute(sql);
         }
@@ -242,6 +247,22 @@ public class MySqlSymmetricDialect extends AbstractSymmetricDialect implements I
     public String getTransactionTriggerExpression(String defaultCatalog, String defaultSchema,
             Trigger trigger) {
         return getTransactionFunctionName() + "()";
+    }
+
+    @Override
+    public String getTransactionId(ISqlTransaction transaction) {
+        String xid = null;
+        if (supportsTransactionId()) {
+            List<String> list = transaction.query("select @@gtid_executed", new StringMapper(), null, null);
+            if (list != null && list.size() > 0) {
+                String gtid = list.get(0);
+                int index = gtid.indexOf(':');
+                if (index != -1) {
+                    xid = gtid.substring(index + 1);
+                }
+            }
+        }
+        return xid;
     }
 
     public void cleanDatabase() {
@@ -285,5 +306,28 @@ public class MySqlSymmetricDialect extends AbstractSymmetricDialect implements I
         PermissionType[] permissions = { PermissionType.CREATE_TABLE, PermissionType.DROP_TABLE, PermissionType.CREATE_TRIGGER, PermissionType.DROP_TRIGGER,
                 PermissionType.CREATE_ROUTINE };
         return permissions;
+    }
+
+    @Override
+    public Database readSymmetricSchemaFromXml() {
+        Database database = super.readSymmetricSchemaFromXml();
+        if (Version.isOlderThanVersion(getProductVersion(), "5.5")) {
+            String prefix = parameterService.getTablePrefix() + "_";
+            reconfigureTableColumn(database, prefix, TableConstants.SYM_FILE_SNAPSHOT, "relative_dir", "55");
+            reconfigureTableColumn(database, prefix, TableConstants.SYM_FILE_SNAPSHOT, "file_name", "55");
+            reconfigureTableColumn(database, prefix, TableConstants.SYM_FILE_INCOMING, "relative_dir", "55");
+            reconfigureTableColumn(database, prefix, TableConstants.SYM_FILE_INCOMING, "file_name", "55");
+        }
+        return database;
+    }
+
+    protected void reconfigureTableColumn(Database database, String prefix, String tableName, String columnName, String size) {
+        Table table = database.findTable(prefix + tableName);
+        if (table != null) {
+            Column column = table.findColumn(columnName);
+            if (column != null) {
+                column.setSize(size);
+            }
+        }
     }
 }

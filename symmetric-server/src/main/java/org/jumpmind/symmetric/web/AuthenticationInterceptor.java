@@ -26,9 +26,9 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-import javax.servlet.ServletException;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 import org.apache.commons.lang3.StringUtils;
 import org.jumpmind.security.ISecurityService;
@@ -64,23 +64,29 @@ public class AuthenticationInterceptor implements IInterceptor {
         String nodeId = null;
         String securityToken = null;
         AuthenticationStatus status = null;
-        AuthenticationSession session = null;
         if (log.isDebugEnabled()) {
-            X509Certificate[] certs = (X509Certificate[]) req.getAttribute("javax.servlet.request.X509Certificate");
+            X509Certificate[] certs = (X509Certificate[]) req.getAttribute("jakarta.servlet.request.X509Certificate");
             if (certs != null && certs.length > 0) {
                 log.debug("Client cert: " + certs[0].getSubjectX500Principal().getName());
             }
         }
-        if (useSessionAuth && (session = getSession(req, false)) != null) {
-            nodeId = (String) session.getAttribute(WebConstants.NODE_ID);
-            securityToken = (String) session.getAttribute(WebConstants.SECURITY_TOKEN);
-            if (!StringUtils.isEmpty(securityToken) && !StringUtils.isEmpty(nodeId)) {
-                status = nodeService.getAuthenticationStatus(nodeId, securityToken);
-            }
-            if (status == null || status == AuthenticationStatus.FORBIDDEN || (status == AuthenticationStatus.ACCEPTED
-                    && sessionExpireMillis > 0 && System.currentTimeMillis() - session.getCreationTime() > sessionExpireMillis)) {
-                log.debug("Node '{}' needs to renew authentication", nodeId);
-                sessions.remove(session.getId());
+        if (useSessionAuth && req.getHeader(WebConstants.HEADER_SESSION_ID) != null) {
+            AuthenticationSession session = getSession(req, false);
+            if (session != null) {
+                nodeId = (String) session.getAttribute(WebConstants.NODE_ID);
+                securityToken = (String) session.getAttribute(WebConstants.SECURITY_TOKEN);
+                if (!StringUtils.isEmpty(securityToken) && !StringUtils.isEmpty(nodeId)) {
+                    status = nodeService.getAuthenticationStatus(nodeId, securityToken);
+                }
+                if (status == null || status == AuthenticationStatus.FORBIDDEN || (status == AuthenticationStatus.ACCEPTED
+                        && sessionExpireMillis > 0 && System.currentTimeMillis() - session.getCreationTime() > sessionExpireMillis)) {
+                    log.debug("Node '{}' needs to renew authentication", nodeId);
+                    ServletUtils.sendError(resp, WebConstants.SC_AUTH_EXPIRED);
+                    return false;
+                }
+            } else {
+                nodeId = req.getParameter(WebConstants.NODE_ID);
+                log.debug("Node '{}' has unknown session ID", nodeId);
                 ServletUtils.sendError(resp, WebConstants.SC_AUTH_EXPIRED);
                 return false;
             }
@@ -94,12 +100,12 @@ public class AuthenticationInterceptor implements IInterceptor {
                 if (!StringUtils.isEmpty(nodeId)) {
                     log.warn("Node '{}' failed to authenticate.  It is missing the security token", nodeId);
                 }
-                ServletUtils.sendError(resp, WebConstants.SC_FORBIDDEN);
+                ServletUtils.sendError(resp, WebConstants.SC_FORBIDDEN, "Missing node ID or security token");
                 return false;
             }
             status = nodeService.getAuthenticationStatus(nodeId, securityToken);
             if (useSessionAuth && status == AuthenticationStatus.ACCEPTED) {
-                session = getSession(req, true);
+                AuthenticationSession session = getSession(req, true);
                 session.setAttribute(WebConstants.NODE_ID, nodeId);
                 session.setAttribute(WebConstants.SECURITY_TOKEN, securityToken);
                 resp.setHeader(WebConstants.HEADER_SET_SESSION_ID, session.getId());
@@ -120,6 +126,8 @@ public class AuthenticationInterceptor implements IInterceptor {
         } else {
             if (status == AuthenticationStatus.LOCKED) {
                 log.warn("Node '{}' failed to authenticate.  It had too many login attempts", nodeId);
+            } else if (status == AuthenticationStatus.FAILED_DECRYPT) {
+                log.warn("Node '{}' failed to authenticate.  Failed to decrypt node password", nodeId);
             } else {
                 log.warn("Node '{}' failed to authenticate.  It had the wrong password", nodeId);
                 nodeService.incrementNodeFailedLogins(nodeId);
@@ -136,17 +144,27 @@ public class AuthenticationInterceptor implements IInterceptor {
             session = sessions.get(sessionId);
         }
         if (session == null && create) {
-            if (sessions.size() >= maxSessions) {
-                removeOldSessions();
+            String nodeId = req.getParameter(WebConstants.NODE_ID);
+            for (AuthenticationSession existingSession : sessions.values()) {
+                if (nodeId.equals(existingSession.getAttribute(WebConstants.NODE_ID))) {
+                    session = existingSession;
+                    session.setCreationTime(System.currentTimeMillis());
+                    break;
+                }
             }
-            String id = securityService.nextSecureHexString(30);
-            session = new AuthenticationSession(id);
-            sessions.put(id, session);
+            if (session == null) {
+                if (sessions.size() >= maxSessions) {
+                    removeOldSessions();
+                }
+                String id = securityService.nextSecureHexString(30);
+                session = new AuthenticationSession(id);
+                sessions.put(id, session);
+            }
         }
         return session;
     }
 
-    protected void removeOldSessions() {
+    protected synchronized void removeOldSessions() {
         long now = System.currentTimeMillis();
         int removedSessions = 0;
         AuthenticationSession oldestSession = null;

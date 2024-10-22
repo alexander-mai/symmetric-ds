@@ -7,15 +7,14 @@ buildscript {
         classpath 'org.asciidoctor:asciidoctorj-pdf:1.6.2'
         classpath 'org.asciidoctor:asciidoctor-gradle-jvm:3.3.2'
 		classpath 'com.diffplug.spotless:spotless-plugin-gradle:6.4.2'
-		classpath 'com.bmuschko:gradle-docker-plugin:3.2.1'
+		classpath 'com.bmuschko:gradle-docker-plugin:9.3.4'
         classpath 'io.github.humblerookie:gradle-github-plugin:0.5.0'
         classpath 'org.jacoco:org.jacoco.ant:0.8.5'
     }
 }
 
 plugins {
-    id "org.sonarqube" version "3.3"
-	id "com.github.hierynomus.license" version "0.16.1"
+    id "org.sonarqube" version "4.3.1.3277"
 	id 'com.vaadin' version "$vaadinPluginVersion" apply false
 }
 
@@ -33,12 +32,6 @@ allprojects {
 		eclipse().configFile(project.rootDir.toString() + '/formatter.eclipse.xml')
 	  }
 	}
-    apply plugin: 'license'
-    license {
-        header rootProject.file("HEADER")
-        include "**/jumpmind/**"
-        exclude "**/flow-build-info.json"
-    }
 }
 
 task develop {
@@ -56,6 +49,17 @@ github {
 }
 
 idea {
+    module {
+        testResourceDirs = []
+        testSourceDirs = [ file('src/test/java') ]
+        resourceDirs += file('src/test/resources')
+        excludeDirs += file('bin')
+        excludeDirs += file('build')
+        excludeDirs += file('dist')
+        excludeDirs += file('node_modules')
+        downloadJavadoc = true
+        downloadSources = true
+    }
     project {
         ipr {
             //you can tinker with the output *.ipr file before it's written out
@@ -77,9 +81,13 @@ task buildScriptDependencies(type: org.gradle.api.tasks.diagnostics.DependencyRe
 //This section applies the sonarqube plugin to all subprojects and then specifies an xml report path in symmetric-assemble
 subprojects {
 	apply plugin: 'org.sonarqube'
-    sonarqube {
+    sonar {
         properties {
             property 'sonar.coverage.jacoco.xmlReportPaths', "${rootDir}/build/reports/jacoco/codeCoverageReport/codeCoverageReport.xml"
+       		//this could be set to sonar.coverage.exclusions as that only excludes these files from coverage
+       		property "sonar.coverage.exclusions", "**/*.ad, **/*.js, **/*.c"
+	     	property "sonar.exclusions","**/ui/**"
+			property "sonar.scm.disabled", "true"    
         }
     }
     tasks.withType(Test).configureEach {
@@ -96,14 +104,14 @@ if (project.properties.containsKey('pro')) {
 
 //used to specify the jacoco version
 jacoco {
-	toolVersion = "0.8.5"
+	toolVersion = "0.8.10"
 }
 
 task codeCoverageReport(type: JacocoReport) {
 
     // Gather execution data from all subprojects
-    executionData fileTree(project.rootDir.parentFile.path).include("**/jacoco/*.exec")
-    subprojects.each {
+    executionData fileTree(project.rootDir.parentFile.parentFile.path).include("**/jacoco/*.exec")
+    allprojects.each {
         sourceSets it.sourceSets.main
     }
 	//controls what reports are generated. XML is needed for sonarqube to run. HTML is for a human readable option to check things
@@ -116,26 +124,8 @@ task codeCoverageReport(type: JacocoReport) {
 }
 
 
-//This controls what tests are run. If you only want unit test comment out subprojects*.integrationTest
-//codeCoverageReport.dependsOn {
-//    subprojects.test
-//    subprojects.integrationTest
-//}
-
-//sets sonarqube parameters
-sonarqube {
-    properties {
-        property "sonar.verbose", true
-        property "sonar.projectKey", "JumpMind_symmetric-ds"
-	    property "sonar.organization", "jumpmind"
-	    property "sonar.host.url", "https://sonarcloud.io"
-        property "sonar.coverage.jacoco.xmlReportPaths", "${rootDir}/build/reports/jacoco/codeCoverageReport/codeCoverageReport.xml"
-        property "sonar.exclusions", "**/*.ad"
-    }
-}
-
 //forces sonar to require codeCoverageReport which runs all of the tests
-tasks['sonarqube'].with {
+tasks['sonar'].with {
     dependsOn codeCoverageReport
 }
 
@@ -159,14 +149,13 @@ task generateJavadoc(type: Javadoc) {
 task publishJavadoc {
     dependsOn generateJavadoc
 	group = 'SymmetricDS'
-	description = 'Publish javadoc to SymmetricDS website'
+	description = 'Publish javadoc to SourceForge website'
     doLast {
         ant.taskdef(name: 'scp', classname: 'org.apache.tools.ant.taskdefs.optional.ssh.Scp',
         classpath: configurations.sshAntTask.asPath)
 
         ant.scp(
-            todir: "$publishUser:$publishPassword@$publishServer:~/www/doc/$majorMinorVersion",
-            port: "$publishPort",
+            todir: "$sourceforgeUser:$sourceforgePassword@web.sourceforge.net:/home/project-web/symmetricds/htdocs/doc/$majorMinorVersion",
             trust: 'true',
             verbose: 'true') {
             fileset(dir: "$buildDir/doc") { include(name: 'javadoc/')
@@ -178,7 +167,7 @@ task publishJavadoc {
 task buildSymmetric {
 	group = 'SymmetricDS'
 	description = 'Build software, documentation, and distribution ZIP files'
-    dependsOn ':symmetric-android:androidDistZip', ':symmetric-server:serverDistZip'
+    dependsOn ':symmetric-server:serverDistZip'
 }
 
 task publishSymmetric {
@@ -189,16 +178,6 @@ task publishSymmetric {
         ant.taskdef(name: 'scp', classname: 'org.apache.tools.ant.taskdefs.optional.ssh.Scp',
         classpath: configurations.sshAntTask.asPath)
 
-        println "Publishing android distribution to source forge"
-        ant.scp(
-            todir: "$sourceforgeUser:$sourceforgePassword@frs.sourceforge.net:/home/frs/project/symmetricds/symmetricds/symmetricds-$majorMinorVersion",
-            trust: 'true',
-            verbose: 'true') {
-            fileset(dir: "../symmetric-android/build/distributions/") {
-                include(name: 'symmetric-android-' + version + '.zip')
-            }
-        }
-
         println "Publishing server distribution to source forge"
         ant.scp(
             todir: "$sourceforgeUser:$sourceforgePassword@frs.sourceforge.net:/home/frs/project/symmetricds/symmetricds/symmetricds-$majorMinorVersion",
@@ -207,6 +186,14 @@ task publishSymmetric {
             fileset(dir: "../symmetric-server/build/distributions/") { 
                 include(name: 'symmetric-server-' + version + '.zip')
             }
+        }
+        println "Setting latest file on SourceForge to symmetricds-$majorMinorVersion/symmetric-server-" + version + ".zip"
+        exec {
+            commandLine "curl"
+            args "-s", "-S", "-H", "Accept: application/json", "-X", "PUT",
+                "-d", "default=windows&default=mac&default=linux&default=bsd&default=solaris&default=others",
+                "-d", "api_key=$sourceforgeApiKey",
+                "https://sourceforge.net/projects/symmetricds/files/symmetricds/symmetricds-$majorMinorVersion/symmetric-server-" + version + ".zip"
         }
     }
 }
@@ -217,6 +204,7 @@ task releaseSymmetric {
 	group = 'SymmetricDS'
 	description = 'Publish software to SourceForge website and online documentation to SymmetricDS website'
 }
+
 
 docker {
     registryCredentials {
@@ -239,18 +227,20 @@ task copyDockerfile(type: Copy) {
 task buildImage(type: com.bmuschko.gradle.docker.tasks.image.DockerBuildImage) {
     dependsOn copyDockerfile
     inputDir = file("../symmetric-server/build/distributions")
-    tags = ["jumpmind/symmetricds:latest", "jumpmind/symmetricds:${version}".toString()]
+    images = ["jumpmind/symmetricds:latest", "jumpmind/symmetricds:${version}".toString()]
     buildArgs = ["SERVER_ZIP":"symmetric-server-${version}.zip"]
 }
 
 task publishDockerLatest(type: com.bmuschko.gradle.docker.tasks.image.DockerPushImage) {
     dependsOn buildImage
-    imageName = "jumpmind/symmetricds:latest"
+    images.empty()
+    images.add("jumpmind/symmetricds:latest")
 }
 
 task publishDocker(type: com.bmuschko.gradle.docker.tasks.image.DockerPushImage) {
     dependsOn publishDockerLatest
-    imageName = "jumpmind/symmetricds:${version}".toString()
+    images.empty()
+    images.add("jumpmind/symmetricds:${version}".toString())
     doLast {
         println "Pushing Docker Image to the jumpmind/symmetricds Repository"
     }

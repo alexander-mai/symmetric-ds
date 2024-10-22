@@ -83,6 +83,7 @@ public class PostgreSqlDdlBuilder extends AbstractDdlBuilder {
         databaseInfo.addNativeTypeMapping(Types.BIT, "BOOLEAN");
         databaseInfo.addNativeTypeMapping(Types.BLOB, "BYTEA", Types.LONGVARBINARY);
         databaseInfo.addNativeTypeMapping(Types.CLOB, "TEXT", Types.LONGVARCHAR);
+        databaseInfo.addNativeTypeMapping(Types.NCLOB, "TEXT", Types.LONGVARCHAR);
         databaseInfo.addNativeTypeMapping(Types.DECIMAL, "NUMERIC", Types.NUMERIC);
         databaseInfo.addNativeTypeMapping(Types.DISTINCT, "BYTEA", Types.LONGVARBINARY);
         databaseInfo.addNativeTypeMapping(Types.DOUBLE, "DOUBLE PRECISION");
@@ -227,6 +228,9 @@ public class PostgreSqlDdlBuilder extends AbstractDdlBuilder {
     @Override
     public void writeExternalIndexDropStmt(Table table, IIndex index, StringBuilder ddl) {
         ddl.append("DROP INDEX ");
+        if (StringUtils.isNotBlank(table.getSchema())) {
+            ddl.append(getDelimitedIdentifier(table.getSchema())).append(".");
+        }
         printIdentifier(getIndexName(index), ddl);
         printEndOfStatement(ddl);
     }

@@ -35,6 +35,7 @@ public class DatabaseWriterSettings {
     // Milliseconds to sleep between commits.
     protected long commitSleepInterval = 5;
     protected boolean treatDateTimeFieldsAsVarchar = false;
+    protected boolean treatBitFieldsAsInteger = false;
     protected boolean usePrimaryKeysFromSource = true;
     protected Conflict defaultConflictSetting;
     protected boolean createTableFailOnError = true;
@@ -46,9 +47,13 @@ public class DatabaseWriterSettings {
     protected boolean ignoreMissingTables = true;
     protected boolean saveCurrentValueOnError = false;
     protected boolean fitToColumn = false;
+    protected boolean autoResolveForeignKeyViolationDelete = true;
+    protected boolean autoResolvePrimaryKeyViolation = true;
+    protected boolean autoResolveUniqueIndexViolation = true;
+    protected boolean autoResolveUniqueIndexIgnoreNullValues = true;
+    protected boolean autoResolveCaptureDeleteMissingRows;
     protected boolean logConflictResolution = false;
     protected boolean logSqlParamsOnError = true;
-    protected boolean loadOnlyNode = false;
     protected String textColumnExpression;
     protected Map<String, Conflict> conflictSettingsByChannel;
     protected Map<String, Conflict> conflictSettingsByTable;
@@ -58,6 +63,7 @@ public class DatabaseWriterSettings {
     protected IAlterDatabaseInterceptor[] alterDatabaseInterceptors;
     protected Set<String> conflictLosingParentRows;
     protected boolean ignoreSqlDataEventFailures = false;
+    protected boolean createIndexConvertUniqueToNonuniqueWhenColumnsNotRequired = true;
 
     public void setAlterDatabaseInterceptors(IAlterDatabaseInterceptor[] alterDatabaseInterceptors) {
         this.alterDatabaseInterceptors = alterDatabaseInterceptors;
@@ -105,6 +111,14 @@ public class DatabaseWriterSettings {
 
     public void setTreatDateTimeFieldsAsVarchar(boolean treatDateTimeFieldsAsVarchar) {
         this.treatDateTimeFieldsAsVarchar = treatDateTimeFieldsAsVarchar;
+    }
+
+    public boolean isTreatBitFieldsAsInteger() {
+        return treatBitFieldsAsInteger;
+    }
+
+    public void setTreatBitFieldsAsInteger(boolean treatBitFieldsAsInteger) {
+        this.treatBitFieldsAsInteger = treatBitFieldsAsInteger;
     }
 
     public boolean isUsePrimaryKeysFromSource() {
@@ -266,6 +280,46 @@ public class DatabaseWriterSettings {
         return fitToColumn;
     }
 
+    public boolean isAutoResolveForeignKeyViolationDelete() {
+        return autoResolveForeignKeyViolationDelete;
+    }
+
+    public void setAutoResolveForeignKeyViolationDelete(boolean autoResolveForeignKeyViolationDelete) {
+        this.autoResolveForeignKeyViolationDelete = autoResolveForeignKeyViolationDelete;
+    }
+
+    public boolean isAutoResolvePrimaryKeyViolation() {
+        return autoResolvePrimaryKeyViolation;
+    }
+
+    public void setAutoResolvePrimaryKeyViolation(boolean autoResolvePrimaryKeyViolation) {
+        this.autoResolvePrimaryKeyViolation = autoResolvePrimaryKeyViolation;
+    }
+
+    public boolean isAutoResolveUniqueIndexViolation() {
+        return autoResolveUniqueIndexViolation;
+    }
+
+    public void setAutoResolveUniqueIndexViolation(boolean autoResolveUniqueIndexViolation) {
+        this.autoResolveUniqueIndexViolation = autoResolveUniqueIndexViolation;
+    }
+
+    public boolean isAutoResolveUniqueIndexIgnoreNullValues() {
+        return autoResolveUniqueIndexIgnoreNullValues;
+    }
+
+    public void setAutoResolveUniqueIndexIgnoreNullValues(boolean autoResolveUniqueIndexIgnoreNullValues) {
+        this.autoResolveUniqueIndexIgnoreNullValues = autoResolveUniqueIndexIgnoreNullValues;
+    }
+
+    public boolean isAutoResolveCaptureDeleteMissingRows() {
+        return autoResolveCaptureDeleteMissingRows;
+    }
+
+    public void setAutoResolveCaptureDeleteMissingRows(boolean autoResolveCaptureDeleteMissingRows) {
+        this.autoResolveCaptureDeleteMissingRows = autoResolveCaptureDeleteMissingRows;
+    }
+
     public void setLogConflictResolution(boolean logConflictResolution) {
         this.logConflictResolution = logConflictResolution;
     }
@@ -298,14 +352,6 @@ public class DatabaseWriterSettings {
         return applyChangesOnly;
     }
 
-    public boolean isLoadOnlyNode() {
-        return loadOnlyNode;
-    }
-
-    public void setLoadOnlyNode(boolean loadOnlyNode) {
-        this.loadOnlyNode = loadOnlyNode;
-    }
-
     public Set<String> getConflictLosingParentRows() {
         return conflictLosingParentRows;
     }
@@ -320,5 +366,13 @@ public class DatabaseWriterSettings {
 
     public void setIgnoreSqlDataEventFailures(boolean ignoreSqlDataEventFailures) {
         this.ignoreSqlDataEventFailures = ignoreSqlDataEventFailures;
+    }
+
+    public boolean isCreateIndexConvertUniqueToNonuniqueWhenColumnsNotRequired() {
+        return createIndexConvertUniqueToNonuniqueWhenColumnsNotRequired;
+    }
+
+    public void setCreateIndexConvertUniqueToNonuniqueWhenColumnsNotRequired(boolean createIndexConvertUniqueToNonuniqueWhenColumnsNotRequired) {
+        this.createIndexConvertUniqueToNonuniqueWhenColumnsNotRequired = createIndexConvertUniqueToNonuniqueWhenColumnsNotRequired;
     }
 }

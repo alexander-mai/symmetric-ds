@@ -122,6 +122,8 @@ public class PostgreSqlDdlReader extends AbstractJdbcDdlReader {
             return Types.LONGVARCHAR;
         } else if (typeName != null && typeName.equalsIgnoreCase("BIT")) {
             return Types.VARCHAR;
+        } else if (typeName != null && typeName.toUpperCase().contains("BOOL")) {
+            return Types.BOOLEAN;
         } else {
             return super.mapUnknownJdbcTypeForColumn(values);
         }
@@ -299,6 +301,13 @@ public class PostgreSqlDdlReader extends AbstractJdbcDdlReader {
     protected boolean isInternalPrimaryKeyIndex(Connection connection,
             DatabaseMetaDataWrapper metaData, Table table, IIndex index) {
         return table.doesIndexContainOnlyPrimaryKeyColumns(index);
+    }
+
+    @Override
+    public List<String> getCatalogNames() {
+        ArrayList<String> list = new ArrayList<String>();
+        list.add(platform.getSqlTemplateDirty().queryForObject("select current_database()", String.class));
+        return list;
     }
 
     @Override

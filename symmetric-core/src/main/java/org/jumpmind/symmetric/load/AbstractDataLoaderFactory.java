@@ -51,9 +51,20 @@ public abstract class AbstractDataLoaderFactory {
         settings.setIgnoreMissingTables(parameterService.is(ParameterConstants.DATA_LOADER_IGNORE_MISSING_TABLES));
         settings.setTreatDateTimeFieldsAsVarchar(
                 parameterService.is(ParameterConstants.DATA_LOADER_TREAT_DATETIME_AS_VARCHAR));
+        settings.setTreatBitFieldsAsInteger(parameterService.is(ParameterConstants.DATA_LOADER_TREAT_BIT_AS_INTEGER, getDefaultTreatBitAsInteger()));
         settings.setSaveCurrentValueOnError(
                 parameterService.is(ParameterConstants.DATA_LOADER_ERROR_RECORD_CUR_VAL, false));
         settings.setFitToColumn(parameterService.is(ParameterConstants.DATA_LOADER_FIT_TO_COLUMN, false));
+        settings.setAutoResolveForeignKeyViolationDelete(
+                parameterService.is(ParameterConstants.AUTO_RESOLVE_FOREIGN_KEY_VIOLATION_DELETE, true));
+        settings.setAutoResolvePrimaryKeyViolation(
+                parameterService.is(ParameterConstants.AUTO_RESOLVE_PRIMARY_KEY_VIOLATION, true));
+        settings.setAutoResolveUniqueIndexViolation(
+                parameterService.is(ParameterConstants.AUTO_RESOLVE_UNIQUE_INDEX_VIOLATION, true));
+        settings.setAutoResolveUniqueIndexIgnoreNullValues(
+                parameterService.is(ParameterConstants.AUTO_RESOLVE_UNIQUE_INDEX_IGNORE_NULL_VALUES, true));
+        settings.setAutoResolveCaptureDeleteMissingRows(
+                parameterService.is(ParameterConstants.AUTO_RESOLVE_CAPTURE_DELETE_MISSING_ROWS));
         settings.setLogConflictResolution(parameterService.is(ParameterConstants.LOG_CONFLICT_RESOLUTION));
         settings.setTextColumnExpression(
                 parameterService.getString(ParameterConstants.DATA_LOADER_TEXT_COLUMN_EXPRESSION));
@@ -62,6 +73,8 @@ public abstract class AbstractDataLoaderFactory {
                 parameterService.is(ParameterConstants.DATA_LOADER_USE_PRIMARY_KEYS_FROM_SOURCE));
         settings.setIgnoreSqlDataEventFailures(parameterService.is(ParameterConstants.DATA_LOADER_IGNORE_SQL_EVENT_ERRORS, false));
         settings.setLogSqlParamsOnError(parameterService.is(ParameterConstants.DATA_LOADER_LOG_SQL_PARAMS_ON_ERROR, true));
+        settings.setCreateIndexConvertUniqueToNonuniqueWhenColumnsNotRequired(
+                parameterService.is(ParameterConstants.CREATE_INDEX_CONVERT_UNIQUE_TO_NONUNIQUE_WHEN_COLUMNS_NOT_REQUIRED, true));
         Map<String, Conflict> byChannel = new HashMap<String, Conflict>();
         Map<String, Conflict> byTable = new HashMap<String, Conflict>();
         boolean multipleDefaultSettingsFound = false;
@@ -93,5 +106,9 @@ public abstract class AbstractDataLoaderFactory {
         settings.setConflictSettingsByChannel(byChannel);
         settings.setConflictSettingsByTable(byTable);
         return settings;
+    }
+
+    protected boolean getDefaultTreatBitAsInteger() {
+        return false;
     }
 }

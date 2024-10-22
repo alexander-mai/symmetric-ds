@@ -439,7 +439,7 @@ public class DmlStatement {
 
     public String buildDynamicSql(BinaryEncoding encoding, Row row,
             boolean useVariableDates, boolean useJdbcTimestampFormat, Column[] columns) {
-        String newSql = sql;
+        String newSql = getSql(false);
         String quote = databaseInfo.getValueQuoteToken();
         String binaryQuoteStart = databaseInfo.getBinaryQuoteStart();
         String binaryQuoteEnd = databaseInfo.getBinaryQuoteEnd();
@@ -472,6 +472,10 @@ public class DmlStatement {
                     } else if (type == Types.TIME) {
                         newSql = newSql.replaceFirst(regex, (useJdbcTimestampFormat ? "{t " : "")
                                 + quote + FormatUtils.TIME_FORMATTER.format(date) + quote
+                                + (useJdbcTimestampFormat ? "}" : ""));
+                    } else if (type == Types.DATE) {
+                        newSql = newSql.replaceFirst(regex, (useJdbcTimestampFormat ? "{d " : "")
+                                + quote + FormatUtils.DATE_FORMATTER.format(date) + quote
                                 + (useJdbcTimestampFormat ? "}" : ""));
                     } else {
                         newSql = newSql.replaceFirst(regex, (useJdbcTimestampFormat ? "{ts " : "")
@@ -550,5 +554,13 @@ public class DmlStatement {
     public void updateCteExpression(String value) {
         this.sql = this.sql.replaceAll(MsSql2008DdlBuilder.CHANGE_TRACKING_SYM_PREFIX + ":",
                 MsSql2008DdlBuilder.CHANGE_TRACKING_SYM_PREFIX + ":" + value);
+    }
+
+    public static boolean[] getNullKeyValues(Object[] values) {
+        boolean[] nullKeyValues = new boolean[values.length];
+        for (int i = 0; i < values.length; i++) {
+            nullKeyValues[i] = values == null;
+        }
+        return nullKeyValues;
     }
 }

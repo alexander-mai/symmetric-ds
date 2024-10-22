@@ -80,15 +80,16 @@ public interface IDataService {
 
     public List<TableReloadStatus> getActiveIncomingTableReloadStatus();
 
-    public TableReloadStatus getTableReloadStatusByLoadId(long loadId);
+    public TableReloadStatus getTableReloadStatusByLoadIdAndSourceNodeId(long loadId, String sourceNodeId);
 
     public List<TableReloadStatus> getTableReloadStatusByTarget(String targetNodeId);
 
-    public TableReloadStatus updateTableReloadStatusDataLoaded(ISqlTransaction transcation, long loadId, long batchId, int batchCount, boolean isBulkLoaded);
+    public TableReloadStatus updateTableReloadStatusDataLoaded(ISqlTransaction transcation, long loadId,
+            String sourceNodeId, long batchId, int batchCount, boolean isBulkLoaded);
 
-    public void updateTableReloadStatusFailed(ISqlTransaction transaction, long loadId, long batchId);
+    public void updateTableReloadStatusFailed(ISqlTransaction transaction, long loadId, String sourceNodeId, long batchId);
 
-    public int updateTableReloadRequestsCancelled(long loadId);
+    public int updateTableReloadRequestsCancelled(long loadId, String sourceNodeId);
 
     public int cancelTableReloadRequest(TableReloadRequest request);
 
@@ -135,8 +136,6 @@ public interface IDataService {
             ProcessInfo processInfo, List<TriggerRouter> triggerRouters,
             Map<Integer, ExtractRequest> extractRequests,
             IReloadGenerator reloadGenerator);
-
-    public boolean insertReloadEvent(TableReloadRequest request, boolean deleteAtClient);
 
     public long insertReloadEvent(ISqlTransaction transaction, Node targetNode,
             TriggerRouter triggerRouter, TriggerHistory triggerHistory, String overrideInitialLoadSelect, boolean isLoad, long loadId, String createBy,
@@ -201,6 +200,8 @@ public interface IDataService {
 
     public List<DataGap> findDataGapsUnchecked();
 
+    public List<DataGap> findDataGapsExpired();
+
     public List<DataGap> findDataGaps();
 
     public Date findCreateTimeOfEvent(long dataId);
@@ -235,6 +236,8 @@ public interface IDataService {
 
     public void deleteDataGap(DataGap gap);
 
+    public void expireDataGaps(ISqlTransaction transaction, Collection<DataGap> gaps);
+
     public void deleteCapturedConfigChannelData();
 
     public boolean fixLastDataGap();
@@ -254,4 +257,10 @@ public interface IDataService {
     public Map<String, Date> getLastDataCaptureByChannel();
 
     public String findNodeIdsByNodeGroupId();
+
+    public int resendBatchAsReload(long batchId, String nodeId);
+
+    public int resendDataAsReload(long minDataId, long maxDataId);
+
+    public int reCaptureData(long minDataId, long maxDataId);
 }

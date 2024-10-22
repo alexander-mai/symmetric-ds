@@ -25,9 +25,9 @@ import java.io.OutputStream;
 import java.util.List;
 import java.util.Map;
 
-import javax.servlet.ServletException;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 import org.apache.commons.lang3.StringUtils;
 import org.jumpmind.symmetric.common.ParameterConstants;
@@ -80,7 +80,7 @@ public class PullUriHandler extends AbstractCompressionUriHandler {
         String nodeId = ServletUtils.getParameter(req, WebConstants.NODE_ID);
         log.debug("Pull requested from node {} at remote address {}", nodeId, req.getRemoteAddr());
         if (StringUtils.isBlank(nodeId)) {
-            ServletUtils.sendError(res, HttpServletResponse.SC_BAD_REQUEST, "Node must be specified");
+            ServletUtils.sendError(res, WebConstants.SC_BAD_REQUEST, "Node must be specified");
             return;
         }
         ChannelMap map = new ChannelMap();
@@ -156,10 +156,6 @@ public class PullUriHandler extends AbstractCompressionUriHandler {
             }
         }
         if (batchesCount > 0) {
-            statisticManager.addJobStats(targetNode.getNodeId(), 1, "Pull Handler",
-                    processInfo.getStartTime().getTime(),
-                    processInfo.getLastStatusChangeTime().getTime(),
-                    dataCount);
             log.info(
                     "{} data and {} batches sent during pull request from {}",
                     new Object[] { dataCount, batchesCount, targetNode.toString() });

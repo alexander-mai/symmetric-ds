@@ -50,8 +50,10 @@ import java.sql.Timestamp;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -60,6 +62,7 @@ import org.jumpmind.db.model.Column;
 import org.jumpmind.db.model.ColumnTypes;
 import org.jumpmind.db.model.CompressionTypes;
 import org.jumpmind.db.model.IIndex;
+import org.jumpmind.db.model.PlatformColumn;
 import org.jumpmind.db.model.PlatformIndex;
 import org.jumpmind.db.model.Table;
 import org.jumpmind.db.model.Trigger;
@@ -87,6 +90,7 @@ public class MsSqlDdlReader extends AbstractJdbcDdlReader {
     private Pattern isoDatePattern = Pattern.compile("'(\\d{4}\\-\\d{2}\\-\\d{2})'");
     /* The regular expression pattern for the ISO times. */
     private Pattern isoTimePattern = Pattern.compile("'(\\d{2}:\\d{2}:\\d{2})'");
+    private Set<String> userDefinedDataTypes;
 
     public MsSqlDdlReader(IDatabasePlatform platform) {
         super(platform);
@@ -225,7 +229,7 @@ public class MsSqlDdlReader extends AbstractJdbcDdlReader {
             if (typeName.toLowerCase().startsWith("text")) {
                 return Types.LONGVARCHAR;
             } else if (typeName.toLowerCase().startsWith("ntext")) {
-                return Types.CLOB;
+                return Types.NCLOB;
             } else if (typeName.toLowerCase().equals("float")) {
                 return Types.FLOAT;
             } else if (typeName.toUpperCase().contains(TypeMap.GEOMETRY)) {
@@ -258,6 +262,17 @@ public class MsSqlDdlReader extends AbstractJdbcDdlReader {
             throws SQLException {
         Column column = super.readColumn(metaData, values);
         String defaultValue = column.getDefaultValue();
+        if (userDefinedDataTypes == null) {
+            userDefinedDataTypes = new HashSet<String>();
+            JdbcSqlTemplate sqlTemplate = (JdbcSqlTemplate) platform.getSqlTemplateDirty();
+            if (sqlTemplate.getDatabaseMajorVersion() >= 9) {
+                String sql = "select name from sys.types where is_user_defined = 1";
+                List<Row> rows = sqlTemplate.query(sql);
+                for (Row r : rows) {
+                    userDefinedDataTypes.add(r.getString("name"));
+                }
+            }
+        }
         if (column.isGenerated() && defaultValue == null) {
             JdbcSqlTemplate sqlTemplate = (JdbcSqlTemplate) platform.getSqlTemplateDirty();
             String sql = "SELECT definition\n"
@@ -335,6 +350,14 @@ public class MsSqlDdlReader extends AbstractJdbcDdlReader {
                 adjustColumnSize(column, -27);
             } else if (column.getJdbcTypeName().equalsIgnoreCase("date") || column.getJdbcTypeName().equalsIgnoreCase("smalldatetime")) {
                 removeColumnSize(column);
+            }
+        }
+        if (userDefinedDataTypes.size() > 0) {
+            if (userDefinedDataTypes.contains(column.getJdbcTypeName())) {
+                removePlatformColumnSize(column);
+                for (PlatformColumn pc : column.getPlatformColumns().values()) {
+                    pc.setUserDefinedType(true);
+                }
             }
         }
         return column;
@@ -508,5 +531,9 @@ public class MsSqlDdlReader extends AbstractJdbcDdlReader {
             }
         }
         return null;
+    }
+
+    protected String getWithNoLockHint() {
+        return " WITH (NOLOCK) ";
     }
 }

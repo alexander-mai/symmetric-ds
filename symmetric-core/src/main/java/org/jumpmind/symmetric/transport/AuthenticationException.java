@@ -22,16 +22,4 @@ package org.jumpmind.symmetric.transport;
 
 public class AuthenticationException extends OfflineException {
     private static final long serialVersionUID = 1L;
-    private boolean isExpiredSession;
-
-    public AuthenticationException() {
-    }
-
-    public AuthenticationException(boolean isExpiredSession) {
-        this.isExpiredSession = isExpiredSession;
-    }
-
-    public boolean isExpiredSession() {
-        return isExpiredSession;
-    }
 }

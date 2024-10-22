@@ -117,21 +117,25 @@ public class StatisticService extends AbstractService implements IStatisticServi
                         stats.getNodesRegistered(), stats.getNodesLoaded(),
                         stats.getNodesDisabled(), stats.getPurgedDataRows(),
                         stats.getPurgedDataEventRows(), stats.getPurgedBatchOutgoingRows(),
-                        stats.getPurgedBatchIncomingRows(), stats.getTriggersCreatedCount(),
+                        stats.getPurgedBatchIncomingRows(), stats.getPurgedStrandedDataRows(),
+                        stats.getPurgedStrandedDataEventRows(), stats.getPurgedExpiredDataRows(),
+                        stats.getTriggersCreatedCount(),
                         stats.getTriggersRebuiltCount(), stats.getTriggersRemovedCount(),
                         stats.getTotalNodesPullTime(), stats.getTotalNodesPushTime() },
                 new int[] { Types.VARCHAR, Types.VARCHAR, Types.TIMESTAMP, Types.TIMESTAMP,
                         Types.BIGINT, Types.BIGINT, Types.BIGINT, Types.BIGINT, Types.BIGINT,
                         Types.BIGINT, Types.BIGINT, Types.BIGINT, Types.BIGINT, Types.BIGINT,
                         Types.BIGINT, Types.BIGINT, Types.BIGINT, Types.BIGINT, Types.BIGINT,
-                        Types.BIGINT });
+                        Types.BIGINT, Types.BIGINT, Types.BIGINT, Types.BIGINT });
+    }
+
+    public List<HostStats> getHostStatsForPeriod(Date start, Date end, String nodeId) {
+        return sqlTemplate.query(getSql("selectHostStatsSql"), new HostStatsMapper(), start, end, nodeId);
     }
 
     public TreeMap<Date, HostStats> getHostStatsForPeriod(Date start, Date end, String nodeId,
             int periodSizeInMinutes) {
-        List<HostStats> list = sqlTemplate.query(getSql("selectHostStatsSql"),
-                new HostStatsMapper(), start, end, nodeId);
-        return new HostStatsByPeriodMap(start, end, list, periodSizeInMinutes);
+        return new HostStatsByPeriodMap(start, end, getHostStatsForPeriod(start, end, nodeId), periodSizeInMinutes);
     }
 
     public Date truncateToMinutes(Date date) {
@@ -148,8 +152,8 @@ public class StatisticService extends AbstractService implements IStatisticServi
             stats.setNodeId(rs.getString("node_id"));
             stats.setHostName(rs.getString("host_name"));
             stats.setJobName(rs.getString("job_name"));
-            stats.setStartTime(truncateToMinutes(rs.getDateTime("start_time")));
-            stats.setEndTime(truncateToMinutes(rs.getDateTime("end_time")));
+            stats.setStartTime(rs.getDateTime("start_time"));
+            stats.setEndTime(rs.getDateTime("end_time"));
             stats.setProcessedCount(rs.getLong("processed_count"));
             stats.setErrorFlag(rs.getBoolean("error_flag"));
             stats.setErrorMessage(rs.getString("error_message"));
@@ -206,6 +210,9 @@ public class StatisticService extends AbstractService implements IStatisticServi
             stats.setPurgedDataEventRows(rs.getLong("purged_data_event_rows"));
             stats.setPurgedBatchOutgoingRows(rs.getLong("purged_batch_outgoing_rows"));
             stats.setPurgedBatchIncomingRows(rs.getLong("purged_batch_incoming_rows"));
+            stats.setPurgedStrandedDataRows(rs.getLong("purged_stranded_data_rows"));
+            stats.setPurgedStrandedDataEventRows(rs.getLong("purged_stranded_event_rows"));
+            stats.setPurgedExpiredDataRows(rs.getLong("purged_expired_data_rows"));
             stats.setTriggersCreatedCount(rs.getLong("triggers_created_count"));
             stats.setTriggersRebuiltCount(rs.getLong("triggers_rebuilt_count"));
             stats.setTriggersRemovedCount(rs.getLong("triggers_removed_count"));

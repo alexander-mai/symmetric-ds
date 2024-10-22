@@ -42,7 +42,6 @@ import org.jumpmind.symmetric.ISymmetricEngine;
 import org.jumpmind.symmetric.Version;
 import org.jumpmind.symmetric.common.Constants;
 import org.jumpmind.symmetric.common.ParameterConstants;
-import org.jumpmind.symmetric.common.ServerConstants;
 import org.jumpmind.symmetric.model.BatchId;
 import org.jumpmind.symmetric.model.IncomingBatch;
 import org.jumpmind.symmetric.model.Node;
@@ -64,7 +63,6 @@ public class HttpTransportManager extends AbstractTransportManager implements IT
     protected Map<String, String> sessionIdByUri = new HashMap<String, String>();
     protected boolean useHeaderSecurityToken;
     protected boolean useSessionAuth;
-    protected boolean isHttp2Enabled;
 
     public HttpTransportManager() {
     }
@@ -74,7 +72,6 @@ public class HttpTransportManager extends AbstractTransportManager implements IT
         this.engine = engine;
         useHeaderSecurityToken = engine.getParameterService().is(ParameterConstants.TRANSPORT_HTTP_USE_HEADER_SECURITY_TOKEN);
         useSessionAuth = engine.getParameterService().is(ParameterConstants.TRANSPORT_HTTP_USE_SESSION_AUTH);
-        isHttp2Enabled = engine.getParameterService().is(ServerConstants.HTTPS2_ENABLE, false);
     }
 
     public int sendCopyRequest(Node local) throws IOException {
@@ -136,6 +133,7 @@ public class HttpTransportManager extends AbstractTransportManager implements IT
     }
 
     protected int sendMessage(URL url, String nodeId, String securityToken, Map<String, String> requestProperties, String data) throws IOException {
+        int rc = 0;
         try (HttpConnection conn = openConnection(url, nodeId, securityToken)) {
             if (requestProperties != null) {
                 for (String key : requestProperties.keySet()) {
@@ -150,15 +148,18 @@ public class HttpTransportManager extends AbstractTransportManager implements IT
             try (OutputStream os = conn.getOutputStream()) {
                 writeMessage(os, data);
                 checkForConnectionUpgrade(conn);
-                try (InputStream is = conn.getInputStream()) {
-                    byte[] bytes = new byte[32];
-                    while (is.read(bytes) != -1) {
-                        log.debug("Read keep-alive");
+                rc = conn.getResponseCode();
+                if (rc == WebConstants.SC_OK) {
+                    try (InputStream is = conn.getInputStream()) {
+                        byte[] bytes = new byte[32];
+                        while (is.read(bytes) != -1) {
+                            log.debug("Read keep-alive");
+                        }
                     }
                 }
-                return conn.getResponseCode();
             }
         }
+        return rc;
     }
 
     protected void checkForConnectionUpgrade(HttpConnection conn) {
@@ -166,12 +167,7 @@ public class HttpTransportManager extends AbstractTransportManager implements IT
 
     public HttpConnection openConnection(URL url, String nodeId, String securityToken)
             throws IOException {
-        HttpConnection conn = null;
-        if (isHttp2Enabled) {
-            conn = new Http2Connection(url);
-        } else {
-            conn = new HttpConnection(url);
-        }
+        HttpConnection conn = new HttpConnection(url);
         conn.setRequestProperty(WebConstants.HEADER_ACCEPT_CHARSET, StandardCharsets.UTF_8.name());
         boolean hasSession = false;
         if (useSessionAuth) {
@@ -336,6 +332,34 @@ public class HttpTransportManager extends AbstractTransportManager implements IT
         return new HttpOutgoingTransport(this, url, getHttpTimeOutInMs(), getHttpConnectTimeOutInMs(), isUseCompression(remote),
                 getCompressionStrategy(), getCompressionLevel(), local.getNodeId(),
                 securityToken, isOutputStreamEnabled(), getOutputStreamSize(), false, requestProperties);
+    }
+
+    @Override
+    public IIncomingTransport getComparePullTransport(Node remote, Node local, String securityToken, String registrationUrl,
+            Map<String, String> requestParameters) throws IOException {
+        StringBuilder builder = new StringBuilder(buildURL("compare/pull", remote, local, securityToken, registrationUrl));
+        for (Map.Entry<String, String> entry : requestParameters.entrySet()) {
+            append(builder, entry.getKey(), entry.getValue());
+        }
+        URL url = new URL(builder.toString());
+        HttpConnection conn = createGetConnectionFor(url, local.getNodeId(), securityToken);
+        conn.addRequestProperty(WebConstants.CHANNEL_QUEUE, requestParameters.get(WebConstants.CHANNEL_QUEUE));
+        return new HttpIncomingTransport(this, conn, engine.getParameterService(), local.getNodeId(), securityToken);
+    }
+
+    @Override
+    public IOutgoingWithResponseTransport getComparePushTransport(Node remote, Node local,
+            String securityToken, String registrationUrl, Map<String, String> requestParameters) throws IOException {
+        StringBuilder builder = new StringBuilder(buildURL("compare/push", remote, local, securityToken, registrationUrl));
+        for (Map.Entry<String, String> entry : requestParameters.entrySet()) {
+            append(builder, entry.getKey(), entry.getValue());
+        }
+        URL url = new URL(builder.toString());
+        Map<String, String> param = new HashMap<String, String>();
+        param.put(WebConstants.CHANNEL_QUEUE, requestParameters.get(WebConstants.CHANNEL_QUEUE));
+        return new HttpOutgoingTransport(this, url, getHttpTimeOutInMs(), getHttpConnectTimeOutInMs(), isUseCompression(remote),
+                getCompressionStrategy(), getCompressionLevel(), local.getNodeId(), securityToken, isOutputStreamEnabled(), getOutputStreamSize(),
+                false, param);
     }
 
     public static String buildRegistrationUrl(String baseUrl, Node node) {

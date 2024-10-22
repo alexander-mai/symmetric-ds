@@ -84,6 +84,10 @@ public class OutgoingBatchService extends AbstractService implements IOutgoingBa
         setSqlMap(new OutgoingBatchServiceSqlMap(symmetricDialect.getPlatform(), createSqlReplacementTokens()));
     }
 
+    public void updateOutgoingError(long batchId, String nodeId) {
+        sqlTemplate.update(getSql("updateOutgoingError"), batchId, nodeId);
+    }
+
     @Override
     public int cancelLoadBatches(long loadId) {
         return sqlTemplate.update(getSql("cancelLoadBatchesSql"), new Date(), loadId);
@@ -106,7 +110,8 @@ public class OutgoingBatchService extends AbstractService implements IOutgoingBa
                 }
             });
             for (OutgoingBatch outgoingBatch : list) {
-                if (includeConfigChannel || !outgoingBatch.getChannelId().equals(Constants.CHANNEL_CONFIG)) {
+                if (includeConfigChannel || (!outgoingBatch.getChannelId().equals(Constants.CHANNEL_CONFIG) &&
+                        !outgoingBatch.getChannelId().equals(Constants.CHANNEL_MONITOR))) {
                     outgoingBatch.setStatus(Status.OK);
                     outgoingBatch.setErrorFlag(false);
                     updateOutgoingBatch(outgoingBatch);
@@ -459,8 +464,11 @@ public class OutgoingBatchService extends AbstractService implements IOutgoingBa
     }
 
     @Override
-    public int countUnsentBatchesByTargetNode(String nodeId) {
-        return sqlTemplateDirty.queryForInt(getSql("countOutgoingBatchesByTargetNodeSql"), new Object[] { nodeId });
+    public int countUnsentBatchesByTargetNode(String nodeId, boolean includeHeartbeats) {
+        if (includeHeartbeats) {
+            return sqlTemplateDirty.queryForInt(getSql("countOutgoingBatchesByTargetNodeSql"), new Object[] { nodeId });
+        }
+        return sqlTemplateDirty.queryForInt(getSql("countOutgoingBatchesByTargetNodeExcludingHeartbeatsSql"), new Object[] { nodeId });
     }
 
     @Override

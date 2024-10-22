@@ -24,6 +24,7 @@ import java.sql.Types;
 
 import org.apache.commons.lang3.StringUtils;
 import org.jumpmind.db.model.Column;
+import org.jumpmind.db.model.PlatformColumn;
 import org.jumpmind.db.model.Table;
 import org.jumpmind.db.model.TypeMap;
 import org.jumpmind.db.platform.DatabaseNamesConstants;
@@ -32,8 +33,16 @@ public class MsSql2005DdlBuilder extends MsSql2000DdlBuilder {
     public MsSql2005DdlBuilder() {
         super();
         this.databaseName = DatabaseNamesConstants.MSSQL2005;
-        databaseInfo.addNativeTypeMapping(Types.BLOB, "IMAGE", Types.BLOB);
         databaseInfo.addNativeTypeMapping(Types.SQLXML, "XML", Types.SQLXML);
+    }
+
+    @Override
+    protected void addLobMapping() {
+        databaseInfo.addNativeTypeMapping(Types.LONGVARBINARY, "VARBINARY(MAX)", Types.LONGVARBINARY);
+        databaseInfo.addNativeTypeMapping(Types.BLOB, "VARBINARY(MAX)", Types.BLOB);
+        databaseInfo.addNativeTypeMapping(Types.NCLOB, "NVARCHAR(MAX)", Types.NCLOB);
+        databaseInfo.addNativeTypeMapping(Types.CLOB, "VARCHAR(MAX)", Types.CLOB);
+        databaseInfo.addNativeTypeMapping(Types.LONGVARCHAR, "VARCHAR(MAX)", Types.LONGVARCHAR);
     }
 
     protected void dropDefaultConstraint(Table table, String columnName, StringBuilder ddl) {
@@ -204,5 +213,16 @@ public class MsSql2005DdlBuilder extends MsSql2000DdlBuilder {
             sqlType = String.format("NVARCHAR(%s)", strColumnSize);
         }
         return sqlType;
+    }
+
+    @Override
+    protected void writeColumnType(Table table, Column column, StringBuilder ddl) {
+        super.writeColumnType(table, column, ddl);
+        PlatformColumn platformColumn = column.findPlatformColumn(databaseName);
+        if (!column.isRequired() && platformColumn != null && platformColumn.isUserDefinedType() &&
+                !(databaseInfo.isNullAsDefaultValueRequired() && databaseInfo.hasNullDefault(column.getMappedTypeCode()))) {
+            ddl.append(" ");
+            writeColumnNullableStmt(ddl);
+        }
     }
 }

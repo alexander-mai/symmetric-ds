@@ -44,8 +44,6 @@ import org.jumpmind.db.sql.DmlStatement.DmlType;
 import org.jumpmind.db.sql.Row;
 import org.jumpmind.db.util.BinaryEncoding;
 import org.jumpmind.vaadin.ui.common.CommonUiUtils;
-import org.jumpmind.vaadin.ui.common.ConfirmDialog;
-import org.jumpmind.vaadin.ui.common.ConfirmDialog.IConfirmListener;
 import org.jumpmind.vaadin.ui.common.CustomSplitLayout;
 import org.jumpmind.vaadin.ui.common.Label;
 import org.jumpmind.vaadin.ui.common.TabSheet.EnhancedTab;
@@ -53,6 +51,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.vaadin.flow.component.Component;
+import com.vaadin.flow.component.confirmdialog.ConfirmDialog;
 import com.vaadin.flow.component.contextmenu.MenuItem;
 import com.vaadin.flow.component.dependency.CssImport;
 import com.vaadin.flow.component.grid.Grid;
@@ -100,6 +99,10 @@ public class SqlExplorer extends CustomSplitLayout {
         this(configDir, databaseProvider, new DefaultSettingsProvider(configDir, user), user, DEFAULT_SPLIT_POS, additionalMenuItems);
     }
 
+    public SqlExplorer(String configDir, IDbProvider databaseProvider, ISettingsProvider settingsProvider, String user, IDbMenuItem... additionalMenuItems) {
+        this(configDir, databaseProvider, settingsProvider, user, DEFAULT_SPLIT_POS, additionalMenuItems);
+    }
+
     public SqlExplorer(String configDir, IDbProvider databaseProvider, String user, double leftSplitPos) {
         this(configDir, databaseProvider, new DefaultSettingsProvider(configDir, user), user, leftSplitPos);
     }
@@ -108,6 +111,7 @@ public class SqlExplorer extends CustomSplitLayout {
             IDbMenuItem... additionalMenuItems) {
         this.databaseProvider = databaseProvider;
         this.settingsProvider = settingsProvider;
+        this.user = user;
         this.savedSplitPosition = leftSplitSize;
         this.additionalMenuItems = additionalMenuItems;
         setSizeFull();
@@ -165,6 +169,10 @@ public class SqlExplorer extends CustomSplitLayout {
             setSplitterPosition(0);
             setPrimaryStyle("max-width", "0%");
             showButton.setVisible(true);
+            resetContentMenuBar();
+            if (selected instanceof QueryPanel) {
+                ((DefaultButtonBar) ((QueryPanel) selected).getButtonBar()).populate(contentMenuBar);
+            }
         });
         hideButton.getElement().setAttribute("title", "Hide the database explorer");
         MenuItem refreshButton = leftMenu.addItem(CommonUiUtils.createMenuBarIcon(VaadinIcon.REFRESH), event -> {
@@ -371,30 +379,25 @@ public class SqlExplorer extends CustomSplitLayout {
             Table table = tables.get(0);
             msg = "Do you want to drop " + table.getFullyQualifiedTableName() + "?";
         }
-        ConfirmDialog.show("Drop Tables?", msg, new IConfirmListener() {
-            private static final long serialVersionUID = 1L;
-
-            @Override
-            public boolean onOk() {
-                for (Table table : tables) {
-                    DbTreeNode treeNode = tableToTreeNode.get(table);
-                    IDb db = dbTree.getDbForNode(treeNode);
-                    try {
-                        db.getPlatform().dropTables(false, table);
-                    } catch (Exception e) {
-                        String msg = "Failed to drop " + table.getFullyQualifiedTableName() + ".  ";
-                        CommonUiUtils.notify(msg + "See log file for more details");
-                        log.warn(msg, e);
-                    }
+        new ConfirmDialog("Drop Tables?", msg, "Ok", e -> {
+            for (Table table : tables) {
+                DbTreeNode treeNode = tableToTreeNode.get(table);
+                IDb db = dbTree.getDbForNode(treeNode);
+                try {
+                    db.getPlatform().dropTables(false, table);
+                } catch (Exception ex) {
+                    String message = "Failed to drop " + table.getFullyQualifiedTableName() + ".  ";
+                    CommonUiUtils.notify(message + "See log file for more details");
+                    log.warn(message, ex);
                 }
-                for (IContentTab panel : infoTabs) {
-                    contentTabs.remove(contentTabs.getTab((Component) panel));
-                }
-                infoTabs.clear();
-                dbTree.refresh(true);
-                return true;
             }
-        });
+            for (IContentTab panel : infoTabs) {
+                contentTabs.remove(contentTabs.getTab((Component) panel));
+            }
+            infoTabs.clear();
+            dbTree.refresh(true);
+        }, "Cancel", e -> {
+        }).open();
     }
 
     protected DbTree buildDbTree() {
@@ -480,34 +483,42 @@ public class SqlExplorer extends CustomSplitLayout {
                     case DbTree.NODE_TYPE_TABLE:
                         contextMenu.addItem(createItem("Query", QUERY_ICON), item -> openQueryWindow(selectedNodes));
                         contextMenu.addItem(createItem("Select", QUERY_ICON), item -> generateSelectForSelectedTables());
-                        contextMenu.addItem(createItem("Insert", QUERY_ICON), item -> generateDmlForSelectedTables(DmlType.INSERT));
-                        contextMenu.addItem(createItem("Update", QUERY_ICON), item -> generateDmlForSelectedTables(DmlType.UPDATE));
-                        contextMenu.addItem(createItem("Delete", QUERY_ICON), item -> generateDmlForSelectedTables(DmlType.DELETE));
-                        contextMenu.addItem(createItem("Drop", VaadinIcon.ARROW_DOWN), item -> dropSelectedTables());
-                        contextMenu.addItem(createItem("Import", VaadinIcon.DOWNLOAD), item -> {
-                            if (!selectedNodes.isEmpty()) {
-                                IDb db = dbTree.getDbForNode(selectedNodes.iterator().next());
-                                new DbImportDialog(db.getPlatform(), dbTree.getSelectedTables()).showAtSize(0.6);
-                            }
-                        });
-                        contextMenu.addItem(createItem("Export", VaadinIcon.UPLOAD), item -> {
-                            if (!selectedNodes.isEmpty()) {
-                                IDb db = dbTree.getDbForNode(selectedNodes.iterator().next());
-                                String excludeTablesRegex = settingsProvider.get().getProperties()
-                                        .get(Settings.SQL_EXPLORER_EXCLUDE_TABLES_REGEX);
-                                new DbExportDialog(db.getPlatform(), dbTree.getSelectedTables(), findQueryPanelForDb(db),
-                                        excludeTablesRegex).showAtSize(0.6);
-                            }
-                        });
-                        contextMenu.addItem(createItem("Fill", VaadinIcon.FILL), item -> {
-                            if (!selectedNodes.isEmpty()) {
-                                IDb db = dbTree.getDbForNode(selectedNodes.iterator().next());
-                                String excludeTablesRegex = settingsProvider.get().getProperties()
-                                        .get(Settings.SQL_EXPLORER_EXCLUDE_TABLES_REGEX);
-                                new DbFillDialog(db.getPlatform(), dbTree.getSelectedTables(), findQueryPanelForDb(db),
-                                        excludeTablesRegex).showAtSize(0.6);
-                            }
-                        });
+                        if (settingsProvider.get().isAllowDml()) {
+                            contextMenu.addItem(createItem("Insert", QUERY_ICON), item -> generateDmlForSelectedTables(DmlType.INSERT));
+                            contextMenu.addItem(createItem("Update", QUERY_ICON), item -> generateDmlForSelectedTables(DmlType.UPDATE));
+                            contextMenu.addItem(createItem("Delete", QUERY_ICON), item -> generateDmlForSelectedTables(DmlType.DELETE));
+                            contextMenu.addItem(createItem("Drop", VaadinIcon.ARROW_DOWN), item -> dropSelectedTables());
+                        }
+                        if (settingsProvider.get().isAllowImport()) {
+                            contextMenu.addItem(createItem("Import", VaadinIcon.DOWNLOAD), item -> {
+                                if (!selectedNodes.isEmpty()) {
+                                    IDb db = dbTree.getDbForNode(selectedNodes.iterator().next());
+                                    new DbImportDialog(db.getPlatform(), dbTree.getSelectedTables()).showAtSize(0.6);
+                                }
+                            });
+                        }
+                        if (settingsProvider.get().isAllowExport()) {
+                            contextMenu.addItem(createItem("Export", VaadinIcon.UPLOAD), item -> {
+                                if (!selectedNodes.isEmpty()) {
+                                    IDb db = dbTree.getDbForNode(selectedNodes.iterator().next());
+                                    String excludeTablesRegex = settingsProvider.get().getProperties()
+                                            .get(Settings.SQL_EXPLORER_EXCLUDE_TABLES_REGEX);
+                                    new DbExportDialog(db.getPlatform(), dbTree.getSelectedTables(), findQueryPanelForDb(db),
+                                            excludeTablesRegex).showAtSize(0.6);
+                                }
+                            });
+                        }
+                        if (settingsProvider.get().isAllowFill()) {
+                            contextMenu.addItem(createItem("Fill", VaadinIcon.FILL), item -> {
+                                if (!selectedNodes.isEmpty()) {
+                                    IDb db = dbTree.getDbForNode(selectedNodes.iterator().next());
+                                    String excludeTablesRegex = settingsProvider.get().getProperties()
+                                            .get(Settings.SQL_EXPLORER_EXCLUDE_TABLES_REGEX);
+                                    new DbFillDialog(db.getPlatform(), dbTree.getSelectedTables(), findQueryPanelForDb(db),
+                                            excludeTablesRegex).showAtSize(0.6);
+                                }
+                            });
+                        }
                         contextMenu.addItem(createItem("Copy Name", VaadinIcon.COPY), item -> {
                             for (DbTreeNode treeNode : selectedNodes) {
                                 IDb db = dbTree.getDbForNode(selectedNodes.iterator().next());

@@ -24,14 +24,14 @@ import java.io.IOException;
 import java.util.HashSet;
 import java.util.Set;
 
-import javax.servlet.Filter;
-import javax.servlet.FilterChain;
-import javax.servlet.FilterConfig;
-import javax.servlet.ServletException;
-import javax.servlet.ServletRequest;
-import javax.servlet.ServletResponse;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
+import jakarta.servlet.Filter;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.FilterConfig;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 import org.apache.commons.lang3.StringUtils;
 
@@ -63,7 +63,7 @@ public class HttpMethodFilter implements Filter {
 
     protected void forbid(String method, ServletRequest request, ServletResponse response) throws IOException {
         HttpServletResponse httpResponse = (HttpServletResponse) response;
-        httpResponse.sendError(HttpServletResponse.SC_FORBIDDEN, "Method " + method + " is not allowed.");
+        httpResponse.sendError(WebConstants.SC_FORBIDDEN, "Method " + method + " is not allowed.");
     }
 
     protected void loadMethods(String configuredValue, Set<String> methods) {

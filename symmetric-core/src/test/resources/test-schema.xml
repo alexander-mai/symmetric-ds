@@ -21,7 +21,7 @@
     under the License.
 
 -->
-<!DOCTYPE database SYSTEM "http://db.apache.org/torque/dtd/database.dtd">
+<!DOCTYPE database SYSTEM "https://symmetricds.sourceforge.net/dtd/database.dtd">
 
 <database name="testdb">
 
@@ -330,7 +330,7 @@
 
 	<table name="test_transform">
 		<column name="id" type="INTEGER" required="true"
-			autoIncrement="true" primaryKey="true" />
+			primaryKey="true" />
 		<column name="data" type="VARCHAR" size="50" />
 		<column name="insert_only" type="INTEGER" />
 	</table>

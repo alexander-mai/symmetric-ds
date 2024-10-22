@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.Charset;
+import java.nio.file.FileSystemException;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Date;
@@ -59,6 +60,8 @@ import org.jumpmind.symmetric.file.FileSyncZipDataWriter;
 import org.jumpmind.symmetric.file.FileTriggerFileModifiedListener;
 import org.jumpmind.symmetric.file.FileTriggerFileModifiedListener.FileModifiedCallback;
 import org.jumpmind.symmetric.file.FileTriggerTracker;
+import org.jumpmind.symmetric.file.IFileSourceTracker;
+import org.jumpmind.symmetric.io.data.Batch;
 import org.jumpmind.symmetric.io.data.CsvData;
 import org.jumpmind.symmetric.io.data.DataEventType;
 import org.jumpmind.symmetric.io.stage.IStagedResource;
@@ -186,21 +189,36 @@ public class FileSyncService extends AbstractOfflineDetectorService implements I
             ctxDate = null;
         }
         Date currentDate = new Date();
+        List<IFileSourceTracker> fileTrackers = engine.getExtensionService().getExtensionPointList(IFileSourceTracker.class);
         List<FileTriggerRouter> fileTriggerRouters = getFileTriggerRoutersForCurrentNode(false);
         for (FileTriggerRouter fileTriggerRouter : fileTriggerRouters) {
             if (fileTriggerRouter.isEnabled()) {
                 try {
                     FileTrigger fileTrigger = fileTriggerRouter.getFileTrigger();
-                    boolean sourceDirReachable = checkSourceDir(fileTriggerRouter);
-                    if (!sourceDirReachable) {
-                        continue;
+                    DirectorySnapshot lastSnapshot = getDirectorySnapshot(fileTriggerRouter);
+                    DirectorySnapshot dirSnapshot = null;
+                    boolean needsHandled = true;
+                    for (IFileSourceTracker tracker : fileTrackers) {
+                        if (tracker.handlesDir(fileTrigger.getBaseDir())) {
+                            needsHandled = false;
+                            if (tracker.checkSourceDir(fileTrigger.getBaseDir())) {
+                                dirSnapshot = tracker.trackChanges(fileTriggerRouter, lastSnapshot, processInfo, useCrc);
+                            }
+                            break;
+                        }
                     }
-                    boolean ignoreFiles = shouldIgnoreInitialFiles(fileTriggerRouter, fileTrigger, ctxDate);
-                    FileTriggerTracker tracker = new FileTriggerTracker(fileTriggerRouter, getDirectorySnapshot(fileTriggerRouter),
-                            processInfo, useCrc, engine);
-                    DirectorySnapshot dirSnapshot = tracker.trackChanges();
-                    saveDirectorySnapshot(fileTriggerRouter, dirSnapshot, ignoreFiles);
-                    engine.getContextService().save(ContextConstants.FILE_SYNC_FAST_SCAN_TRACK_TIME, String.valueOf(currentDate.getTime()));
+                    if (needsHandled) {
+                        if (checkSourceDir(fileTriggerRouter)) {
+                            FileTriggerTracker tracker = new FileTriggerTracker(fileTriggerRouter, lastSnapshot,
+                                    processInfo, useCrc, engine);
+                            dirSnapshot = tracker.trackChanges();
+                        }
+                    }
+                    if (dirSnapshot != null) {
+                        boolean ignoreFiles = shouldIgnoreInitialFiles(fileTriggerRouter, fileTrigger, ctxDate);
+                        saveDirectorySnapshot(fileTriggerRouter, dirSnapshot, ignoreFiles);
+                        engine.getContextService().save(ContextConstants.FILE_SYNC_FAST_SCAN_TRACK_TIME, String.valueOf(currentDate.getTime()));
+                    }
                 } catch (Exception ex) {
                     log.error("Failed to track changes for file trigger router: "
                             + fileTriggerRouter.getFileTrigger().getTriggerId()
@@ -221,7 +239,7 @@ public class FileSyncService extends AbstractOfflineDetectorService implements I
         Date currentDate = new Date();
         // Remove milliseconds - not all operating systems support milliseconds in the file modification time
         currentDate.setTime((currentDate.getTime() / 1000) * 1000);
-        int maxRowsBeforeCommit = engine.getParameterService().getInt(ParameterConstants.DATA_LOADER_MAX_ROWS_BEFORE_COMMIT);
+        int maxRowsBeforeCommit = engine.getParameterService().getInt(ParameterConstants.FILESYNCTRACKER_MAX_ROWS_BEFORE_COMMIT);
         try {
             List<FileTriggerRouter> fileTriggerRouters = getFileTriggerRoutersForCurrentNode(false);
             for (final FileTriggerRouter fileTriggerRouter : fileTriggerRouters) {
@@ -496,14 +514,31 @@ public class FileSyncService extends AbstractOfflineDetectorService implements I
 
     public void save(List<FileSnapshot> changes, boolean shouldIgnore) {
         if (changes != null) {
+            long maxRows = engine.getParameterService().getLong(ParameterConstants.FILESYNCTRACKER_MAX_ROWS_BEFORE_COMMIT, 10000);
             ISqlTransaction sqlTransaction = null;
             try {
                 sqlTransaction = sqlTemplate.startSqlTransaction();
                 if (shouldIgnore) {
                     engine.getSymmetricDialect().disableSyncTriggers(sqlTransaction, null);
                 }
+                long count = 0;
+                long totalCountSoFar = 0;
                 for (FileSnapshot fileSnapshot : changes) {
                     save(sqlTransaction, fileSnapshot);
+                    count++;
+                    totalCountSoFar++;
+                    if (count >= maxRows && changes.size() > totalCountSoFar) {
+                        sqlTransaction.commit();
+                        if (shouldIgnore) {
+                            engine.getSymmetricDialect().enableSyncTriggers(sqlTransaction);
+                        }
+                        close(sqlTransaction);
+                        sqlTransaction = sqlTemplate.startSqlTransaction();
+                        if (shouldIgnore) {
+                            engine.getSymmetricDialect().disableSyncTriggers(sqlTransaction, null);
+                        }
+                        count = 0;
+                    }
                 }
                 sqlTransaction.commit();
             } catch (Error ex) {
@@ -527,16 +562,7 @@ public class FileSyncService extends AbstractOfflineDetectorService implements I
 
     public void save(ISqlTransaction sqlTransaction, FileSnapshot snapshot) {
         snapshot.setLastUpdateTime(new Date());
-        if (0 >= sqlTransaction.prepareAndExecute(
-                getSql("updateFileSnapshotSql"),
-                new Object[] { snapshot.getLastEventType().getCode(), snapshot.getCrc32Checksum(),
-                        snapshot.getFileSize(), snapshot.getFileModifiedTime(),
-                        snapshot.getLastUpdateTime(), snapshot.getLastUpdateBy(), snapshot.getChannelId(),
-                        snapshot.getReloadChannelId(),
-                        snapshot.getTriggerId(), snapshot.getRouterId(), snapshot.getRelativeDir(),
-                        snapshot.getFileName() }, new int[] { Types.VARCHAR, Types.NUMERIC,
-                                Types.NUMERIC, Types.NUMERIC, Types.TIMESTAMP, Types.VARCHAR, Types.VARCHAR, Types.VARCHAR,
-                                Types.VARCHAR, Types.VARCHAR, Types.VARCHAR, Types.VARCHAR })) {
+        if (0 >= executeUpdate(sqlTransaction, snapshot)) {
             snapshot.setCreateTime(snapshot.getLastUpdateTime());
             sqlTransaction.prepareAndExecute(
                     getSql("insertFileSnapshotSql"),
@@ -560,6 +586,22 @@ public class FileSyncService extends AbstractOfflineDetectorService implements I
         }
     }
 
+    private int executeUpdate(ISqlTransaction sqlTransaction, FileSnapshot snapshot) {
+        if (snapshot.getLastEventType().equals(LastEventType.CREATE)) {
+            return 0;
+        }
+        return sqlTransaction.prepareAndExecute(
+                getSql("updateFileSnapshotSql"),
+                new Object[] { snapshot.getLastEventType().getCode(), snapshot.getCrc32Checksum(),
+                        snapshot.getFileSize(), snapshot.getFileModifiedTime(),
+                        snapshot.getLastUpdateTime(), snapshot.getLastUpdateBy(), snapshot.getChannelId(),
+                        snapshot.getReloadChannelId(),
+                        snapshot.getTriggerId(), snapshot.getRouterId(), snapshot.getRelativeDir(),
+                        snapshot.getFileName() }, new int[] { Types.VARCHAR, Types.NUMERIC,
+                                Types.NUMERIC, Types.NUMERIC, Types.TIMESTAMP, Types.VARCHAR, Types.VARCHAR, Types.VARCHAR,
+                                Types.VARCHAR, Types.VARCHAR, Types.VARCHAR, Types.VARCHAR });
+    }
+
     synchronized public RemoteNodeStatuses pullFilesFromNodes(boolean force) {
         CommunicationType communicationType = engine.getParameterService().is(ParameterConstants.NODE_OFFLINE) ? CommunicationType.OFF_FSPULL
                 : CommunicationType.FILE_PULL;
@@ -579,8 +621,9 @@ public class FileSyncService extends AbstractOfflineDetectorService implements I
     @Override
     public Object[] getStagingPathComponents(OutgoingBatch fileSyncBatch) {
         StringBuilder zipName = new StringBuilder(32);
-        zipName.append("filesync_").append(fileSyncBatch.getNodeBatchId()).append(".zip");
-        return new String[] { Constants.STAGING_CATEGORY_OUTGOING, fileSyncBatch.getNodeId(), zipName.toString() };
+        zipName.append(StringUtils.leftPad(String.valueOf(fileSyncBatch.getBatchId()), 10, "0")).append("_filesync");
+        return new String[] { Constants.STAGING_CATEGORY_OUTGOING, Batch.getStagedLocation(fileSyncBatch.isCommonFlag(),
+                fileSyncBatch.getNodeId(), fileSyncBatch.getBatchId()), zipName.toString() };
     }
 
     public List<OutgoingBatch> sendFiles(ProcessInfo processInfo, Node targetNode,
@@ -590,8 +633,8 @@ public class FileSyncService extends AbstractOfflineDetectorService implements I
             return batchesToProcess;
         }
         IStagingManager stagingManager = engine.getStagingManager();
-        long maxBytesToSync = parameterService
-                .getLong(ParameterConstants.TRANSPORT_MAX_BYTES_TO_SYNC);
+        long maxBytesToSync = parameterService.getLong(ParameterConstants.TRANSPORT_MAX_BYTES_TO_SYNC);
+        int compressionLevel = parameterService.getInt(ParameterConstants.FILE_SYNC_COMPRESSION_LEVEL);
         List<OutgoingBatch> processedBatches = new ArrayList<OutgoingBatch>();
         OutgoingBatch currentBatch = null;
         IStagedResource stagedResource = null;
@@ -614,10 +657,8 @@ public class FileSyncService extends AbstractOfflineDetectorService implements I
                         stagedResource = previouslyStagedResource;
                     } else {
                         if (dataWriter == null) {
-                            stagedResource = stagingManager.create(
-                                    Constants.STAGING_CATEGORY_OUTGOING, processInfo.getSourceNodeId(),
-                                    targetNode.getNodeId(), "filesync.zip");
-                            dataWriter = new FileSyncZipDataWriter(maxBytesToSync, this,
+                            stagedResource = stagingManager.create(getStagingPathComponents(currentBatch));
+                            dataWriter = new FileSyncZipDataWriter(maxBytesToSync, compressionLevel, this,
                                     engine.getNodeService(), stagedResource, engine.getExtensionService(), engine.getConfigurationService());
                         }
                         log.debug("Extracting batch {} for filesync.", currentBatch.getNodeBatchId());
@@ -696,7 +737,7 @@ public class FileSyncService extends AbstractOfflineDetectorService implements I
             }
             throw e;
         } finally {
-            if (stagedResource != null) {
+            if (stagedResource != null && parameterService.is(ParameterConstants.FILE_SYNC_DELETE_ZIP_FILE_AFTER_SYNC)) {
                 stagedResource.delete();
             }
         }
@@ -849,13 +890,32 @@ public class FileSyncService extends AbstractOfflineDetectorService implements I
         if (identity != null) {
             NodeSecurity security = engine.getNodeService().findNodeSecurity(identity.getNodeId(), true);
             if (security != null) {
-                if (nodeCommunication.getCommunicationType() == CommunicationType.FILE_PULL
-                        || nodeCommunication.getCommunicationType() == CommunicationType.OFF_FSPULL) {
-                    pullFilesFromNode(nodeCommunication, status, identity, security);
-                } else if (nodeCommunication.getCommunicationType() == CommunicationType.FILE_PUSH
-                        || nodeCommunication.getCommunicationType() == CommunicationType.OFF_FSPUSH) {
-                    pushFilesToNode(nodeCommunication, status, identity, security);
-                }
+                long cumulativeBatchesProcessed = 0;
+                long lastBatchesProcessed = 0;
+                boolean immediatePullIfDataFound = parameterService.is(ParameterConstants.PULL_IMMEDIATE_IF_DATA_FOUND, false);
+                boolean immediatePushIfDataFound = parameterService.is(ParameterConstants.PUSH_IMMEDIATE_IF_DATA_FOUND, false);
+                boolean isFilePull = nodeCommunication.getCommunicationType() == CommunicationType.FILE_PULL
+                        || nodeCommunication.getCommunicationType() == CommunicationType.OFF_FSPULL;
+                boolean isFilePush = nodeCommunication.getCommunicationType() == CommunicationType.FILE_PUSH
+                        || nodeCommunication.getCommunicationType() == CommunicationType.OFF_FSPUSH;
+                do {
+                    if (lastBatchesProcessed > 0) {
+                        if (engine.getNodeService().isDataLoadStarted()) {
+                            log.info("Immediate pull requested while in reload mode");
+                        } else {
+                            log.info("Immediate pull requested while data found");
+                        }
+                    }
+                    if (isFilePull) {
+                        pullFilesFromNode(nodeCommunication, status, identity, security);
+                    } else if (isFilePush) {
+                        pushFilesToNode(nodeCommunication, status, identity, security);
+                    }
+                    lastBatchesProcessed = status.getBatchesProcessed() - cumulativeBatchesProcessed;
+                    cumulativeBatchesProcessed = status.getBatchesProcessed();
+                } while ((!status.failed()) &&
+                        (((isFilePull && immediatePullIfDataFound) || (isFilePush && immediatePushIfDataFound))
+                                && lastBatchesProcessed > 0));
             }
         }
     }
@@ -984,15 +1044,46 @@ public class FileSyncService extends AbstractOfflineDetectorService implements I
                                 waitMillis);
                         if (isLocked) {
                             log.debug("The {} node got a shared file sync lock", sourceNodeId);
-                            @SuppressWarnings("unchecked")
-                            Map<String, String> filesToEventType = (Map<String, String>) interpreter
-                                    .eval(script);
-                            if (engine.getParameterService().is(ParameterConstants.FILE_SYNC_PREVENT_PING_BACK)) {
-                                updateFileIncoming(sourceNodeId, filesToEventType);
+                            int retryFileSyncCount = parameterService.getInt(ParameterConstants.FILE_SYNC_RETRY_COUNT, 2);
+                            long retryFileSyncDelayMs = parameterService.getLong(ParameterConstants.FILE_SYNC_RETRY_DELAY_MS, 5000);
+                            for (int i = 0; i < retryFileSyncCount; i++) {
+                                if (i > 0) {
+                                    try {
+                                        log.info("Retrying file sync for batch {}", batchId);
+                                        Thread.sleep(retryFileSyncDelayMs);
+                                    } catch (InterruptedException e) {
+                                    }
+                                }
+                                try {
+                                    @SuppressWarnings("unchecked")
+                                    Map<String, String> filesToEventType = (Map<String, String>) interpreter
+                                            .eval(script);
+                                    if (engine.getParameterService().is(ParameterConstants.FILE_SYNC_PREVENT_PING_BACK)) {
+                                        updateFileIncoming(sourceNodeId, filesToEventType);
+                                    }
+                                    incomingBatch
+                                            .setLoadRowCount(filesToEventType != null ? filesToEventType
+                                                    .size() : 0);
+                                    break;
+                                } catch (Throwable e) {
+                                    log.error(e.getMessage(), e);
+                                    Throwable target = e;
+                                    if (e instanceof TargetError) {
+                                        Throwable t = ((TargetError) e).getTarget();
+                                        if (t != null) {
+                                            target = t;
+                                        }
+                                    }
+                                    if (target instanceof FileSystemException) {
+                                        if (i + 1 >= retryFileSyncCount) {
+                                            throw target;
+                                        }
+                                        continue;
+                                    } else {
+                                        throw target;
+                                    }
+                                }
                             }
-                            incomingBatch
-                                    .setLoadRowCount(filesToEventType != null ? filesToEventType
-                                            .size() : 0);
                         } else {
                             throw new RuntimeException(
                                     "Could not obtain file sync shared lock within " + waitMillis

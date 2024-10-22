@@ -81,6 +81,10 @@ public class MockNodeService implements INodeService {
     public void deleteNode(String nodeId, boolean syncChange) {
     }
 
+    @Override
+    public void deleteNode(String myNodeId, String targetNodeIId, boolean syncChange) {
+    }
+
     public List<String> findAllExternalIds() {
         return null;
     }
@@ -118,6 +122,10 @@ public class MockNodeService implements INodeService {
     }
 
     public Collection<Node> findEnabledNodesFromNodeGroup(String nodeGroupId) {
+        return null;
+    }
+
+    public Collection<Node> getEnabledNodesFromDatabase() {
         return null;
     }
 

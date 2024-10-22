@@ -41,7 +41,7 @@ import org.jumpmind.symmetric.model.NodeStatus;
  */
 public interface INodeService {
     public enum AuthenticationStatus {
-        SYNC_DISABLED, REGISTRATION_REQUIRED, FORBIDDEN, ACCEPTED, LOCKED;
+        SYNC_DISABLED, REGISTRATION_REQUIRED, FORBIDDEN, ACCEPTED, LOCKED, FAILED_DECRYPT;
     };
 
     public Node findNode(String nodeId);
@@ -67,6 +67,8 @@ public interface INodeService {
 
     public Collection<Node> findEnabledNodesFromNodeGroup(String nodeGroupId);
 
+    public Collection<Node> getEnabledNodesFromDatabase();
+
     public Collection<Node> findNodesWithOpenRegistration();
 
     public Map<String, NodeSecurity> findAllNodeSecurity(boolean useCache);
@@ -86,6 +88,8 @@ public interface INodeService {
     public void deleteNodeSecurity(String nodeId);
 
     public void deleteNode(String nodeId, boolean syncChange);
+
+    public void deleteNode(String myNodeId, String targetNodeIId, boolean syncChange);
 
     public String findSymmetricVersion();
 

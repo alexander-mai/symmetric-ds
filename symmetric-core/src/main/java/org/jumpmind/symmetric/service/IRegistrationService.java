@@ -89,6 +89,8 @@ public interface IRegistrationService {
      */
     public void reOpenRegistration(String nodeId);
 
+    public void reOpenRegistration(String nodeId, boolean forceNewPassword);
+
     /**
      * Mark the passed in node as registered in node_security
      * 
@@ -118,7 +120,7 @@ public interface IRegistrationService {
      */
     public boolean attemptToRegisterWithServer(int maxNumberOfAttempts);
 
-    public List<RegistrationRequest> getRegistrationRequests(boolean includeNodesWithOpenRegistrations);
+    public List<RegistrationRequest> getRegistrationRequests(boolean includeNodesWithOpenRegistrations, boolean includeRejects);
 
     public boolean deleteRegistrationRequest(RegistrationRequest request);
 

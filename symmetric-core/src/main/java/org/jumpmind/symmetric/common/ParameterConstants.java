@@ -39,8 +39,6 @@ final public class ParameterConstants {
     private ParameterConstants() {
     }
 
-    public final static String MINUTES_BEFORE_NODE_REPORTED_AS_OFFLINE = "console.report.as.offline.minutes";
-    public final static int DEFAULT_MINUTES_BEFORE_NODE_REPORTED_AS_OFFLINE = 24 * 60;
     public final static String AUTO_START_ENGINE = "auto.start.engine";
     public final static String JDBC_EXECUTE_BATCH_SIZE = "db.jdbc.execute.batch.size";
     public final static String JDBC_EXECUTE_BULK_BATCH_SIZE = "db.jdbc.bulk.execute.batch.size";
@@ -67,8 +65,6 @@ final public class ParameterConstants {
     public final static String START_STATISTIC_FLUSH_JOB = "start.stat.flush.job";
     public final static String START_STAGE_MGMT_JOB = "start.stage.management.job";
     public final static String START_WATCHDOG_JOB = "start.watchdog.job";
-    public final static String START_NOTIFICATION_JOB = "start.notification.job";
-    public final static String START_MONITOR_JOB = "start.monitor.job";
     public final static String START_OFFLINE_PULL_JOB = "start.offline.pull.job";
     public final static String START_OFFLINE_PUSH_JOB = "start.offline.push.job";
     public final static String START_REFRESH_CACHE_JOB = "start.refresh.cache.job";
@@ -122,6 +118,11 @@ final public class ParameterConstants {
     public final static String AUTO_RESOLVE_FOREIGN_KEY_VIOLATION_REVERSE = "auto.resolve.foreign.key.violation.reverse";
     public final static String AUTO_RESOLVE_FOREIGN_KEY_VIOLATION_REVERSE_PEERS = "auto.resolve.foreign.key.violation.reverse.peers";
     public final static String AUTO_RESOLVE_FOREIGN_KEY_VIOLATION_REVERSE_RELOAD = "auto.resolve.foreign.key.violation.reverse.reload";
+    public final static String AUTO_RESOLVE_FOREIGN_KEY_VIOLATION_DELETE = "auto.resolve.foreign.key.violation.delete";
+    public final static String AUTO_RESOLVE_PRIMARY_KEY_VIOLATION = "auto.resolve.primary.key.violation";
+    public final static String AUTO_RESOLVE_UNIQUE_INDEX_VIOLATION = "auto.resolve.unique.index.violation";
+    public final static String AUTO_RESOLVE_UNIQUE_INDEX_IGNORE_NULL_VALUES = "auto.resolve.unique.index.ignore.null.values";
+    public final static String AUTO_RESOLVE_CAPTURE_DELETE_MISSING_ROWS = "auto.resolve.capture.delete.missing.rows";
     public final static String AUTO_INSERT_REG_SVR_IF_NOT_FOUND = "auto.insert.registration.svr.if.not.found";
     public final static String AUTO_SYNC_CONFIGURATION = "auto.sync.configuration";
     public final static String AUTO_SYNC_CONFIGURATION_ON_INCOMING = "auto.sync.configuration.on.incoming";
@@ -172,6 +173,7 @@ final public class ParameterConstants {
     public final static String CREATE_TABLE_WITHOUT_INDEXES = "create.table.without.indexes";
     public final static String CREATE_TABLE_WITHOUT_PK_IF_SOURCE_WITHOUT_PK = "create.table.without.pk.if.source.without.pk";
     public final static String CREATE_TABLE_NOT_NULL_COLUMNS = "create.table.not.null.columns.supported";
+    public final static String CREATE_INDEX_CONVERT_UNIQUE_TO_NONUNIQUE_WHEN_COLUMNS_NOT_REQUIRED = "create.index.convert.unique.to.nonunique.when.columns.not.required";
     public final static String STREAM_TO_FILE_ENABLED = "stream.to.file.enabled";
     public final static String STREAM_TO_FILE_THRESHOLD = "stream.to.file.threshold.bytes";
     public final static String STREAM_TO_FILE_TIME_TO_LIVE_MS = "stream.to.file.ttl.ms";
@@ -206,6 +208,9 @@ final public class ParameterConstants {
     public final static String ROUTING_GAPS_USE_TRANSACTION_VIEW = "routing.gaps.use.transaction.view";
     public final static String ROUTING_GAPS_TRANSACTION_VIEW_CLOCK_SYNC_THRESHOLD_MS = "routing.gaps.transaction.view.clock.sync.threshold";
     public final static String ROUTING_MAX_BATCH_SIZE_EXCEED_PERCENT = "routing.max.batch.size.exceed.percent";
+    public final static String ROUTING_USE_CHANNEL_THREADS = "routing.use.channel.threads";
+    public final static String ROUTING_THREAD_COUNT_PER_SERVER = "routing.thread.per.server.count";
+    public final static String ROUTING_LOCK_TIMEOUT_MS = "routing.lock.timeout.ms";
     public final static String INCOMING_BATCH_SKIP_DUPLICATE_BATCHES_ENABLED = "incoming.batches.skip.duplicates";
     @Deprecated
     public final static String INCOMING_BATCH_DELETE_ON_LOAD = "incoming.batch.delete.on.load";
@@ -224,6 +229,7 @@ final public class ParameterConstants {
     public final static String DATA_LOADER_TEXT_COLUMN_EXPRESSION = "dataloader.text.column.expression";
     public final static String DATA_LOADER_SLEEP_TIME_AFTER_EARLY_COMMIT = "dataloader.sleep.time.after.early.commit";
     public final static String DATA_LOADER_TREAT_DATETIME_AS_VARCHAR = "db.treat.date.time.as.varchar.enabled";
+    public final static String DATA_LOADER_TREAT_BIT_AS_INTEGER = "db.treat.bit.as.integer.enabled";
     public final static String DATA_LOADER_USE_PRIMARY_KEYS_FROM_SOURCE = "dataloader.use.primary.keys.from.source";
     public final static String DATA_LOADER_IGNORE_SQL_EVENT_ERRORS = "dataloader.ignore.sql.event.errors";
     public final static String DATA_LOADER_LOG_SQL_PARAMS_ON_ERROR = "dataloader.log.sql.params.on.error";
@@ -239,23 +245,12 @@ final public class ParameterConstants {
     public final static String DBDIALECT_ORACLE_USE_SELECT_START_DATA_ID_HINT = "oracle.use.select.data.using.start.data.id.hint";
     public final static String DBDIALECT_ORACLE_SEQUENCE_NOORDER = "oracle.sequence.noorder";
     public final static String DBDIALECT_ORACLE_SEQUENCE_NOORDER_NEXTVALUE_DB_URLS = "oracle.sequence.noorder.nextvalue.db.urls";
-    public final static String DBDIALECT_ORACLE_BULK_LOAD_SQLLDR_CMD = "oracle.bulk.load.sqlldr.cmd";
-    public final static String DBDIALECT_ORACLE_BULK_LOAD_SQLLDR_OPTIONS = "oracle.bulk.load.sqlldr.options";
-    public final static String DBDIALECT_ORACLE_BULK_LOAD_SQLLDR_INFILE_CHARSET = "oracle.bulk.load.sqlldr.infile.charset";
-    public final static String DBDIALECT_ORACLE_BULK_LOAD_EZCONNECT = "oracle.bulk.load.ezconnect";
-    public final static String DBDIALECT_ORACLE_BULK_FIELD_TERMINATOR = "oracle.bulk.load.field.terminator";
-    public final static String DBDIALECT_ORACLE_BULK_LINE_TERMINATOR = "oracle.bulk.load.line.terminator";
     public final static String DBDIALECT_ORACLE_LOAD_QUERY_HINT_PARALLEL_COUNT = "oracle.load.query.hint.parallel.count";
     public final static String DBDIALECT_ORACLE_USE_NTYPES_FOR_SYNC = "oracle.use.ntypes.for.sync";
     public final static String DBDIALECT_ORACLE_JDBC_LOB_HANDLING = "oracle.jdbc.lob.handling";
     public final static String DBDIALECT_TIBERO_USE_TRANSACTION_VIEW = "tibero.use.transaction.view";
     public final static String DBDIALECT_TIBERO_TEMPLATE_NUMBER_SPEC = "tibero.template.precision";
     public final static String DBDIALECT_TIBERO_USE_HINTS = "tibero.use.hints";
-    public final static String DBDIALECT_TIBERO_BULK_LOAD_TBLOADER_CMD = "tibero.bulk.load.tbloader.cmd";
-    public final static String DBDIALECT_TIBERO_BULK_LOAD_TBLOADER_OPTIONS = "tibero.bulk.load.tbloader.options";
-    public final static String DBDIALECT_TIBERO_BULK_LOAD_DBNAME = "tibero.bulk.load.dbname";
-    public final static String DBDIALECT_TIBERO_BULK_LINE_TERMINATOR = "tibero.bulk.load.line.terminator";
-    public final static String DBDIALECT_TIBERO_BULK_FIELD_TERMINATOR = "tibero.bulk.load.field.terminator";
     public final static String DBDIALECT_ORACLE_TRANSACTION_VIEW_CLOCK_SYNC_THRESHOLD_MS = "oracle.transaction.view.clock.sync.threshold.ms";
     public final static String DATA_ID_INCREMENT_BY = "data.id.increment.by";
     public final static String TRANSPORT_HTTP_MANUAL_REDIRECTS_ENABLED = "http.manual.redirects.enabled";
@@ -284,8 +279,6 @@ final public class ParameterConstants {
     public final static String CACHE_TIMEOUT_LOAD_FILTER_IN_MS = "cache.load.filter.time.ms";
     public final static String CACHE_TIMEOUT_CONFLICT_IN_MS = "cache.conflict.time.ms";
     public final static String CACHE_TIMEOUT_TABLES_IN_MS = "cache.table.time.ms";
-    public final static String CACHE_TIMEOUT_MONITOR_IN_MS = "cache.monitor.time.ms";
-    public final static String CACHE_TIMEOUT_NOTIFICATION_IN_MS = "cache.notification.time.ms";
     public final static String CACHE_CHANNEL_COMMON_BATCHES_IN_MS = "cache.channel.common.batches.time.ms";
     public final static String CACHE_CHANNEL_DEFAULT_ROUTER_IN_MS = "cache.channel.default.router.time.ms";
     public final static String TRIGGER_UPDATE_CAPTURE_CHANGED_DATA_ONLY = "trigger.update.capture.changed.data.only.enabled";
@@ -319,10 +312,13 @@ final public class ParameterConstants {
     public final static String PURGE_REGISTRATION_REQUEST_RETENTION_MINUTES = "purge.registration.request.retention.minutes";
     public final static String PURGE_STATS_RETENTION_MINUTES = "purge.stats.retention.minutes";
     public final static String PURGE_TRIGGER_HIST_RETENTION_MINUTES = "purge.trigger.hist.retention.minutes";
+    public final static String PURGE_EXPIRED_DATA_GAP_RETENTION_MINUTES = "purge.expired.data.gap.retention.minutes";
+    public final static String PURGE_MONITOR_EVENT_RETENTION_MINUTES = "purge.monitor.event.retention.minutes";
     public final static String PURGE_MAX_NUMBER_OF_DATA_IDS = "job.purge.max.num.data.to.delete.in.tx";
     public final static String PURGE_MAX_NUMBER_OF_BATCH_IDS = "job.purge.max.num.batches.to.delete.in.tx";
     public final static String PURGE_MAX_NUMBER_OF_EVENT_BATCH_IDS = "job.purge.max.num.data.event.batches.to.delete.in.tx";
     public final static String PURGE_MAX_LINGERING_BATCHES_READ = "job.purge.max.lingering.batches.read";
+    public final static String PURGE_MAX_EXPIRED_DATA_GAPS_READ = "job.purge.max.data.gaps.read";
     public final static String PURGE_FIRST_PASS = "job.purge.first.pass";
     public final static String PURGE_FIRST_PASS_OUTSTANDING_BATCHES_THRESHOLD = "job.purge.first.pass.outstanding.batches.threshold";
     public final static String JMX_LINE_FEED = "jmx.line.feed";
@@ -349,16 +345,18 @@ final public class ParameterConstants {
     public final static String STORES_UPPERCASE_NAMES_IN_CATALOG = "stores.uppercase.names.in.catalog";
     public final static String DB_MASTER_COLLATION = "db.master.collation";
     public final static String SEQUENCE_TIMEOUT_MS = "sequence.timeout.ms";
-    public final static String REST_API_ENABLED = "rest.api.enable";
-    public final static String REST_HEARTBEAT_ON_PULL = "rest.api.heartbeat.on.pull";
     public final static String SYNCHRONIZE_ALL_JOBS = "jobs.synchronized.enable";
     public final static String FILE_SYNC_ENABLE = "file.sync.enable";
     public final static String FILE_SYNC_FAST_SCAN = "file.sync.fast.scan";
     public final static String FILE_SYNC_USE_CRC = "file.sync.use.crc";
     public final static String FILE_SYNC_PREVENT_PING_BACK = "file.sync.prevent.ping.back";
     public final static String FILE_SYNC_LOCK_WAIT_MS = "file.sync.lock.wait.ms";
+    public final static String FILE_SYNC_DELETE_ZIP_FILE_AFTER_SYNC = "file.sync.delete.zip.file.after.sync";
     public final static String FILE_SYNC_DELETE_CTL_FILE_AFTER_SYNC = "file.sync.delete.ctl.file.after.sync";
     public final static String FILE_SYNC_USE_CTL_AS_FILE_EXT = "file.sync.use.ctl.as.file.ext";
+    public final static String FILE_SYNC_COMPRESSION_LEVEL = "file.compression.level";
+    public final static String FILE_SYNC_RETRY_COUNT = "file.sync.retry.count";
+    public final static String FILE_SYNC_RETRY_DELAY_MS = "file.sync.retry.delay.ms";
     public final static String BSH_LOAD_FILTER_HANDLES_MISSING_TABLES = "bsh.load.filter.handles.missing.tables";
     public final static String BSH_TRANSFORM_GLOBAL_SCRIPT = "bsh.transform.global.script";
     public final static String BSH_EXTENSION_GLOBAL_SCRIPT = "bsh.extension.global.script";
@@ -369,13 +367,6 @@ final public class ParameterConstants {
     public final static String MSSQL_INCLUDE_CATALOG_IN_TRIGGERS = "mssql.include.catalog.in.triggers";
     public final static String MSSQL_TRIGGER_EXECUTE_AS = "mssql.trigger.execute.as";
     public final static String MSSQL_TRIGGER_ORDER_FIRST = "mssql.trigger.order.first";
-    public final static String MSSQL_BULK_LOAD_MAX_ROWS_BEFORE_FLUSH = "mssql.bulk.load.max.rows.before.flush";
-    public final static String MSSQL_BULK_LOAD_FIRE_TRIGGERS = "mssql.bulk.load.fire.triggers";
-    public final static String MSSQL_BULK_LOAD_UNC_PATH = "mssql.bulk.load.unc.path";
-    public final static String MSSQL_BULK_LOAD_ROW_TERMINATOR = "mssql.bulk.load.row.terminator";
-    public final static String MSSQL_BULK_LOAD_FIELD_TERMINATOR = "mssql.bulk.load.field.terminator";
-    public final static String MSSQL_BULK_LOAD_USE_BCP = "mssql.bulk.load.use.bcp";
-    public final static String MSSQL_BULK_LOAD_BCP_CMD = "mssql.bulk.load.bcp.cmd";
     public final static String MSSQL_USE_SNAPSHOT_ISOLATION = "mssql.use.snapshot.isolation";
     public final static String DBDIALECT_SYBASE_ASE_CONVERT_UNITYPES_FOR_SYNC = "sybase.ase.convert.unitypes.for.sync";
     public final static String SYBASE_ROW_LEVEL_LOCKS_ONLY = "sybase.allow.only.row.level.locks.on.runtime.tables";
@@ -385,22 +376,12 @@ final public class ParameterConstants {
     public final static String EXTENSIONS_XML = "extensions.xml";
     public final static String DATA_CREATE_TIME_TIMEZONE = "data.create_time.timezone";
     public final static String LOG_SLOW_SQL_THRESHOLD_MILLIS = "log.slow.sql.threshold.millis";
+    public final static String CONSOLE_LOG_SLOW_SQL_THRESHOLD_MILLIS = "console.log.slow.sql.threshold.millis";
     public final static String LOG_SQL_PARAMETERS_INLINE = "log.sql.parameters.inline";
     public final static String SYNC_TRIGGERS_THREAD_COUNT_PER_SERVER = "sync.triggers.thread.count.per.server";
     public final static String SYNC_TRIGGERS_TIMEOUT_IN_SECONDS = "sync.triggers.timeout.in.seconds";
     public final static String SYNC_TRIGGERS_REG_SVR_INSTALL_WITHOUT_CONFIG = "sync.triggers.reg.svr.install.without.config";
     public final static String SYNC_TRIGGERS_FIX_DUPLICATE_ACTIVE_TRIGGER_HISTORIES = "sync.triggers.fix.duplicate.active.trigger.histories";
-    public static final String SMTP_HOST = "smtp.host";
-    public static final String SMTP_TRANSPORT = "smtp.transport";
-    public static final String SMTP_PORT = "smtp.port";
-    public static final String SMTP_FROM = "smtp.from";
-    public static final String SMTP_USER = "smtp.user";
-    public static final String SMTP_PASSWORD = "smtp.password";
-    public static final String SMTP_USE_STARTTLS = "smtp.starttls";
-    public static final String SMTP_USE_AUTH = "smtp.auth";
-    public static final String SMTP_ALLOW_UNTRUSTED_CERT = "smtp.allow.untrusted.cert";
-    public static final String SMTP_SOCKET_FACTORY_CLASS = "smtp.socket.factory.class";
-    public static final String SMTP_SSL_PROTOCOLS = "smtp.ssl.protocols";
     public final static String MONITOR_EVENTS_CAPTURE_ENABLED = "monitor.events.capture.enabled";
     public final static String HYBRID_PUSH_PULL_ENABLED = "hybrid.push.pull.enabled";
     public final static String HYBRID_PUSH_PULL_TIMEOUT = "hybrid.push.pull.timeout.ms";
@@ -426,10 +407,6 @@ final public class ParameterConstants {
     public final static String ALLOW_TRIGGER_CREATE_OR_REPLACE = "trigger.allow.create.or.replace";
     public final static String NODE_LOAD_ONLY = "load.only";
     public final static String MYSQL_TINYINT_DDL_TO_BOOLEAN = "mysql.tinyint.ddl.to.boolean";
-    public final static String MYSQL_BULK_LOAD_MAX_ROWS_BEFORE_FLUSH = "mysql.bulk.load.max.rows.before.flush";
-    public final static String MYSQL_BULK_LOAD_MAX_BYTES_BEFORE_FLUSH = "mysql.bulk.load.max.bytes.before.flush";
-    public final static String MYSQL_BULK_LOAD_LOCAL = "mysql.bulk.load.local";
-    public final static String MYSQL_BULK_LOAD_REPLACE = "mysql.bulk.load.replace";
     public static final String LOAD_ONLY_PROPERTY_PREFIX = "target.";
     public final static String KAFKA_PRODUCER = "kafka.producer";
     public final static String KAFKA_FORMAT = "kafka.format";
@@ -446,36 +423,20 @@ final public class ParameterConstants {
             KAFKA_TOPIC_BY, KAFKA_CONFLUENT_REGISTRY_URL, KAFKA_AVRO_JAVA_PACKAGE, KAFKACLIENT_SECURITY_PROTOCOL,
             KAFKACLIENT_SSL_KEYSTORE_LOCATION, KAFKACLIENT_SSL_KEYSTORE_PASSWORD, KAFKACLIENT_SSL_TRUSTSTORE_LOCATION,
             KAFKACLIENT_SSL_KEYSTORE_TYPE };
+    public final static String RABBITMQ_FORMAT = "rabbitmq.format";
+    public final static String RABBITMQ_QUEUE_NAME = "rabbitmq.queue.name";
+    public final static String RABBITMQ_MESSAGE_BY = "rabbitmq.message.by";
+    public final static String RABBITMQ_QUEUE_BY = "rabbitmq.queue.by";
+    public final static String RABBITMQ_USE_SSL = "rabbitmq.use.ssl";
     public final static String SNOWFLAKE_STAGING_TYPE = "snowflake.staging.type";
     public final static String SNOWFLAKE_INTERNAL_STAGE_NAME = "snowflake.internal.stage.name";
-    public final static String CLOUD_BULK_LOAD_MAX_ROWS_BEFORE_FLUSH = "cloud.bulk.load.max.rows.before.flush";
-    public final static String CLOUD_BULK_LOAD_MAX_BYTES_BEFORE_FLUSH = "cloud.bulk.load.max.bytes.before.flush";
-    public final static String CLOUD_BULK_LOAD_S3_BUCKET = "cloud.bulk.load.s3.bucket";
-    public final static String CLOUD_BULK_LOAD_S3_ACCESS_KEY = "cloud.bulk.load.s3.access.key";
-    public final static String CLOUD_BULK_LOAD_S3_SECRET_KEY = "cloud.bulk.load.s3.secret.key";
-    public final static String CLOUD_BULK_LOAD_S3_ENDPOINT = "cloud.bulk.load.s3.endpoint";
-    public final static String CLOUD_BULK_LOAD_S3_REGION = "cloud.bulk.load.s3.region";
-    public final static String CLOUD_BULK_LOAD_AZURE_ACCOUNT_NAME = "cloud.bulk.load.azure.account.name";
-    public final static String CLOUD_BULK_LOAD_AZURE_ACCOUNT_KEY = "cloud.bulk.load.azure.account.key";
-    public final static String CLOUD_BULK_LOAD_AZURE_BLOB_CONTAINER = "cloud.bulk.load.azure.blob.container";
-    public final static String CLOUD_BULK_LOAD_AZURE_SAS_TOKEN = "cloud.bulk.load.azure.sas.token";
-    public final static String CLOUD_BULK_ROW_TERMINATOR = "cloud.bulk.row.terminator";
-    public final static String CLOUD_BULK_FIELD_TERMINATOR = "cloud.bulk.field.terminator";
-    public final static String CLOUD_BULK_FIELD_QUOTE = "cloud.bulk.field.quote";
-    public final static String CLOUD_BULK_CODEPAGE = "cloud.bulk.codepage";
     public final static String SNAPSHOT_FILE_INCLUDE_HOSTNAME = "snapshot.file.include.hostname";
     public final static String SNAPSHOT_MAX_FILES = "snapshot.max.files";
     public final static String SNAPSHOT_MAX_BATCHES = "snapshot.max.batches";
     public final static String SNAPSHOT_MAX_NODE_CHANNELS = "snapshot.max.node.channels";
     public final static String SNAPSHOT_OPERATION_TIMEOUT_MS = "snapshot.operation.timeout.ms";
-    public final static String REDSHIFT_APPEND_TO_COPY_COMMAND = "redshift.append.to.copy.command";
-    public final static String REDSHIFT_BULK_LOAD_MAX_ROWS_BEFORE_FLUSH = "redshift.bulk.load.max.rows.before.flush";
-    public final static String REDSHIFT_BULK_LOAD_MAX_BYTES_BEFORE_FLUSH = "redshift.bulk.load.max.bytes.before.flush";
-    public final static String REDSHIFT_BULK_LOAD_S3_BUCKET = "redshift.bulk.load.s3.bucket";
-    public final static String REDSHIFT_BULK_LOAD_S3_ACCESS_KEY = "redshift.bulk.load.s3.access.key";
-    public final static String REDSHIFT_BULK_LOAD_S3_SECRET_KEY = "redshift.bulk.load.s3.secret.key";
-    public final static String REDSHIFT_BULK_LOAD_S3_ENDPOINT = "redshift.bulk.load.s3.endpoint";
     public final static String POSTGRES_SECURITY_DEFINER = "postgres.security.definer";
+    public final static String POSTGRES_CONVERT_INFINITY_DATE_TO_NULL = "postgres.convert.infinity.date.to.null";
     public final static String[] ALL_JDBC_PARAMS = new String[] { DB_FETCH_SIZE, DB_QUERY_TIMEOUT_SECS, JDBC_EXECUTE_BATCH_SIZE, JDBC_ISOLATION_LEVEL,
             JDBC_READ_STRINGS_AS_BYTES, TREAT_BINARY_AS_LOB_ENABLED, LOG_SLOW_SQL_THRESHOLD_MILLIS, LOG_SQL_PARAMETERS_INLINE };
     public final static String GOOGLE_BIG_QUERY_MAX_ROWS_PER_RPC = "google.bigquery.max.rows.per.rpc";
@@ -500,6 +461,11 @@ final public class ParameterConstants {
     public final static String DEFAULT_VALUES_TO_LEAVE_UNQUOTED = "default.values.to.leave.unquoted";
     public final static String DEFAULT_VALUES_TO_TRANSLATE = "default.values.to.translate";
     public final static String INCLUDE_ROWIDENTIFIER_AS_COLUMN = "include.rowidentifier.as.column";
+    public final static String COMPARE_QUEUE_PER_REQUEST_COUNT = "compare.queue.per.request.count";
+    public final static String COMPARE_THREAD_PER_SERVER_COUNT = "compare.thread.per.server.count";
+    public final static String COMPARE_LOCK_TIMEOUT_MS = "compare.lock.timeout.ms";
+    public final static String CAPTURE_TYPE_TIME_BASED = "time.based.capture";
+    public final static String FILESYNCTRACKER_MAX_ROWS_BEFORE_COMMIT = "filesynctracker.max.rows.before.commit";
 
     public static Map<String, ParameterMetaData> getParameterMetaData() {
         return parameterMetaData;

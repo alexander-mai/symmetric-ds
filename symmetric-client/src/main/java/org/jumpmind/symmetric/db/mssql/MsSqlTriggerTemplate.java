@@ -64,12 +64,7 @@ public class MsSqlTriggerTemplate extends AbstractTriggerTemplate {
         blobColumnTemplate =   "case when $(origTableAlias).\"$(columnName)\" is null then '' else '\"' + replace(replace(" + defaultCatalog + "dbo.$(prefixName)_base64_encode(CONVERT(VARBINARY(max), $(origTableAlias).\"$(columnName)\")),'\\','\\\\'),'\"','\\\"') + '\"' end" ;
         binaryColumnTemplate = "case when $(tableAlias).\"$(columnName)\" is null then '' else '\"' + replace(replace(" + defaultCatalog + "dbo.$(prefixName)_base64_encode(CONVERT(VARBINARY(max), $(tableAlias).\"$(columnName)\")),'\\','\\\\'),'\"','\\\"') + '\"' end" ;
         booleanColumnTemplate = "case when $(tableAlias).\"$(columnName)\" is null then '' when $(tableAlias).\"$(columnName)\" = 1 then '\"1\"' else '\"0\"' end" ;
-        //dateTimeWithTimeZoneColumnTemplate = "case when $(tableAlias).\"$(columnName)\" is null then '' else ('\"' + convert(varchar, $(tableAlias).\"$(columnName)\", 127) + '\"') end";
         dateTimeWithTimeZoneColumnTemplate = "case when $(tableAlias).\"$(columnName)\" is null then '' else ('\"' + convert(varchar,cast($(tableAlias).\"$(columnName)\" as datetime2), 121) + ' ' + case when datepart(tz, $(tableAlias).\"$(columnName)\") > 0 then '+' else '-' end + RIGHT('0' + cast(abs(datepart(tz, $(tableAlias).\"$(columnName)\") / 60) as varchar), 2) + ':' +  RIGHT('0' + cast(datepart(tz, $(tableAlias).\"$(columnName)\") % 60 as varchar), 2) + '\"') end";
-
-
-        
-        
         triggerConcatCharacter = "+" ;
         newTriggerValue = "inserted" ;
         oldTriggerValue = "deleted" ;
@@ -77,7 +72,6 @@ public class MsSqlTriggerTemplate extends AbstractTriggerTemplate {
         newColumnPrefix = "" ;
 
         sqlTemplates = new HashMap<String,String>();
-
         sqlTemplates.put("insertTriggerTemplate" ,
 getCreateTriggerString() + " $(schemaNameOnly)$(triggerName) on $(schemaName)$(tableName) with execute as "+triggerExecuteAs+" after insert as                                                                                                \n" +
 "   begin                                                                                                                                                                  \n" +
@@ -420,7 +414,7 @@ getCreateTriggerString() + " $(schemaNameOnly)$(triggerName) on $(schemaName)$(t
 
         sqlTemplates.put("filteredDdlTriggerTemplate",
 getCreateTriggerString() + " $(triggerName) on database\n" + 
-"for create_table, drop_table, alter_table,\n" +
+"for create_table, drop_table, alter_table, rename,\n" +
 "create_view, drop_view, alter_view,\n" +
 "create_function, drop_function, alter_function,\n" +
 "create_procedure, drop_procedure, alter_procedure,\n" +
@@ -456,7 +450,7 @@ getCreateTriggerString() + " $(triggerName) on database\n" +
         
         sqlTemplates.put("allDdlTriggerTemplate",
 getCreateTriggerString() + " $(triggerName) on database\n" + 
-"for create_table, drop_table, alter_table,\n" +
+"for create_table, drop_table, alter_table,rename,\n" +
 "create_view, drop_view, alter_view,\n" +
 "create_function, drop_function, alter_function,\n" +
 "create_procedure, drop_procedure, alter_procedure,\n" +

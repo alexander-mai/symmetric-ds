@@ -40,6 +40,7 @@ package org.jumpmind.db.platform.postgresql;
  */
 
 import java.sql.Array;
+import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Types;
 import java.text.ParseException;
@@ -64,9 +65,11 @@ import org.jumpmind.db.platform.PermissionResult.Status;
 import org.jumpmind.db.platform.PermissionType;
 import org.jumpmind.db.sql.ISqlTemplate;
 import org.jumpmind.db.sql.Row;
+import org.jumpmind.db.sql.SqlConstants;
 import org.jumpmind.db.sql.SqlException;
 import org.jumpmind.db.sql.SqlTemplateSettings;
 import org.jumpmind.db.sql.SymmetricLobHandler;
+import org.jumpmind.db.util.BasicDataSourcePropertyConstants;
 import org.jumpmind.db.util.BinaryEncoding;
 
 /*
@@ -77,12 +80,21 @@ public class PostgreSqlDatabasePlatform extends AbstractJdbcDatabasePlatform {
     public static final String JDBC_DRIVER = "org.postgresql.Driver";
     /* The subprotocol used by the standard PostgreSQL driver. */
     public static final String JDBC_SUBPROTOCOL = "postgresql";
+    private static final String POS_INFINITY = "infinity";
+    private static final String NEG_INFINITY = "-infinity";
+    private static final String POS_INFINITY_YEAR = "292278994";
 
     /*
      * Creates a new platform instance.
      */
     public PostgreSqlDatabasePlatform(DataSource dataSource, SqlTemplateSettings settings) {
         super(dataSource, overrideSettings(settings));
+        getDatabaseInfo().setInfinityDateAllowed(!settings.getProperties().is(SqlConstants.POSTGRES_CONVERT_INFINITY_DATE_TO_NULL, true));
+        String dbUrl = settings.getProperties().get(BasicDataSourcePropertyConstants.DB_POOL_URL);
+        if (dbUrl != null && dbUrl.contains("autosave=always")) {
+            log.info("Detected driver is using auto savepoints");
+            getDatabaseInfo().setRequiresSavePointsInTransaction(false);
+        }
     }
 
     protected static SqlTemplateSettings overrideSettings(SqlTemplateSettings settings) {
@@ -117,6 +129,13 @@ public class PostgreSqlDatabasePlatform extends AbstractJdbcDatabasePlatform {
     protected PostgreSqlJdbcSqlTemplate createSqlTemplate() {
         SymmetricLobHandler lobHandler = new PostgresLobHandler();
         return new PostgreSqlJdbcSqlTemplate(dataSource, settings, lobHandler, getDatabaseInfo());
+    }
+
+    @Override
+    protected PostgreSqlJdbcSqlTemplate createSqlTemplateDirty() {
+        PostgreSqlJdbcSqlTemplate sqlTemplateDirty = new PostgreSqlJdbcSqlTemplate(dataSource, settings, new PostgresLobHandler(), getDatabaseInfo());
+        sqlTemplateDirty.setIsolationLevel(Connection.TRANSACTION_READ_UNCOMMITTED);
+        return sqlTemplateDirty;
     }
 
     public String getName() {
@@ -255,12 +274,24 @@ public class PostgreSqlDatabasePlatform extends AbstractJdbcDatabasePlatform {
     public PermissionResult getLogMinePermission() {
         PermissionResult result = new PermissionResult(PermissionType.LOG_MINE, "UNIMPLEMENTED");
         String walLevel = getSqlTemplate().queryForString("select current_setting('wal_level')");
-        if ("logical".equals(walLevel)) {
+        boolean hasReplicationPermission = getSqlTemplate().queryForInt(
+                "select count(*) from pg_roles where (rolsuper or rolreplication) and pg_has_role(current_user, oid, 'member')") > 0;
+        if ("logical".equals(walLevel) && hasReplicationPermission) {
             result.setStatus(Status.PASS);
         } else {
             result.setStatus(Status.FAIL);
-            result.setTestDetails(walLevel);
-            result.setSolution("Set wal_level to logical");
+            if (!"logical".equals(walLevel)) {
+                if (!hasReplicationPermission) {
+                    result.setTestDetails("wal_level=" + walLevel + ", missing REPLICATION role attribute");
+                    result.setSolution("Set wal_level to logical and grant the REPLICATION role attribute to the SymmetricDS user");
+                } else {
+                    result.setTestDetails(walLevel);
+                    result.setSolution("Set wal_level to logical");
+                }
+            } else {
+                result.setTestDetails("Missing REPLICATION role attribute");
+                result.setSolution("Grant the REPLICATION role attribute to the SymmetricDS user");
+            }
         }
         return result;
     }
@@ -412,5 +443,31 @@ public class PostgreSqlDatabasePlatform extends AbstractJdbcDatabasePlatform {
     public String getCharSetName() {
         return (String) getSqlTemplate().queryForObject("select pg_encoding_to_char(encoding) from pg_database\r\n"
                 + "where datname = current_database()", String.class);
+    }
+
+    @Override
+    protected String getDateTimeStringValue(String name, int type, Row row, boolean useVariableDates) {
+        return massageInfinityDate(super.getDateTimeStringValue(name, type, row, useVariableDates));
+    }
+
+    @Override
+    protected String getTimestampStringValue(String name, int type, Row row, boolean useVariableDates) {
+        return massageInfinityDate(super.getTimestampStringValue(name, type, row, useVariableDates));
+    }
+
+    @Override
+    protected String getTimestampTzStringValue(String name, int type, Row row, boolean useVariableDates) {
+        return getTimestampStringValue(name, type, row, false) == null ? null : row.getString(name);
+    }
+
+    protected String massageInfinityDate(String date) {
+        int hyphenIndex = date.indexOf('-');
+        if (hyphenIndex <= 6 && hyphenIndex > 0) {
+            return date;
+        } else if (date.startsWith(POS_INFINITY_YEAR) || date.equals(POS_INFINITY)) {
+            return getDatabaseInfo().isInfinityDateAllowed() ? POS_INFINITY : null;
+        } else {
+            return getDatabaseInfo().isInfinityDateAllowed() ? NEG_INFINITY : null;
+        }
     }
 }

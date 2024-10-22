@@ -254,6 +254,8 @@ public class DatabaseXmlUtil {
                                     column.setDefaultValue(attributeValue);
                                 } else if (attributeName.equalsIgnoreCase("autoIncrement")) {
                                     column.setAutoIncrement(FormatUtils.toBoolean(attributeValue));
+                                } else if (attributeName.equalsIgnoreCase("autoUpdate")) {
+                                    column.setAutoUpdate(FormatUtils.toBoolean(attributeValue));
                                 } else if (attributeName.equalsIgnoreCase("javaName")) {
                                     column.setJavaName(attributeValue);
                                 } else if (attributeName.equalsIgnoreCase("description")) {
@@ -292,6 +294,8 @@ public class DatabaseXmlUtil {
                                     if (isNotBlank(attributeValue)) {
                                         platformColumn.setEnumValues(attributeValue.split(","));
                                     }
+                                } else if (attributeName.equalsIgnoreCase("userDefinedType")) {
+                                    platformColumn.setUserDefinedType(Boolean.parseBoolean(attributeValue));
                                 }
                             }
                             if (table != null && table.getColumnCount() > 0) {
@@ -503,7 +507,8 @@ public class DatabaseXmlUtil {
             Collection<PlatformColumn> platformColumns = column.getPlatformColumns()
                     .values();
             for (PlatformColumn col : platformColumns) {
-                if (col.getName().equals(DatabaseNamesConstants.ORACLE) || col.getName().equals(DatabaseNamesConstants.ORACLE122)) {
+                if (col.getName().equals(DatabaseNamesConstants.ORACLE) || col.getName().equals(DatabaseNamesConstants.ORACLE122) || col.getName().equals(
+                        DatabaseNamesConstants.ORACLE23)) {
                     return true;
                 }
             }
@@ -555,6 +560,9 @@ public class DatabaseXmlUtil {
                 if (column.isAutoIncrement()) {
                     output.write(" autoIncrement=\"" + column.isAutoIncrement() + "\"");
                 }
+                if (column.isAutoUpdate()) {
+                    output.write(" autoUpdate=\"" + column.isAutoUpdate() + "\"");
+                }
                 if (column.getJavaName() != null) {
                     output.write(" javaName=\"" + column.getJavaName() + "\"");
                 }
@@ -597,6 +605,9 @@ public class DatabaseXmlUtil {
                                 writeComma = true;
                             }
                             output.write("\"");
+                        }
+                        if (platformColumn.isUserDefinedType()) {
+                            output.write(" userDefinedType=\"" + platformColumn.isUserDefinedType() + "\"");
                         }
                         output.write("/>\n");
                     }

@@ -81,12 +81,20 @@ public class AseDdlReader extends AbstractJdbcDdlReader {
     private Pattern isoDatePattern = Pattern.compile("'(\\d{4}\\-\\d{2}\\-\\d{2})'");
     /* The regular expression pattern for the ISO times. */
     private Pattern isoTimePattern = Pattern.compile("'(\\d{2}:\\d{2}:\\d{2})'");
+    private int majorVersion;
 
     public AseDdlReader(IDatabasePlatform platform) {
         super(platform);
         setDefaultCatalogPattern(null);
         setDefaultSchemaPattern(null);
         setDefaultTablePattern("%");
+    }
+
+    protected int getMajorVersion(DatabaseMetaDataWrapper metaData) throws SQLException {
+        if (majorVersion == 0) {
+            majorVersion = metaData.getMetaData().getDatabaseMajorVersion();
+        }
+        return majorVersion;
     }
 
     @Override
@@ -97,7 +105,9 @@ public class AseDdlReader extends AbstractJdbcDdlReader {
             // Sybase does not return the auto-increment status or the generated
             // column status via the database metadata
             determineAutoIncrementFromResultSetMetaData(connection, table, table.getColumns());
-            determineGeneratedColumns(connection, table, table.getColumns());
+            if (getMajorVersion(metaData) >= 15) {
+                determineGeneratedColumns(connection, table, table.getColumns());
+            }
         }
         return table;
     }
@@ -141,11 +151,11 @@ public class AseDdlReader extends AbstractJdbcDdlReader {
             return Types.TIMESTAMP;
         } else if (typeName != null && typeName.equalsIgnoreCase("BIGTIME")) {
             return Types.TIME;
-        } else if(typeName != null && typeName.equalsIgnoreCase("UNITEXT")) {
+        } else if (typeName != null && typeName.equalsIgnoreCase("UNITEXT")) {
             return Types.LONGVARBINARY;
-        } else if(typeName != null && typeName.equalsIgnoreCase("UNICHAR")) {
+        } else if (typeName != null && typeName.equalsIgnoreCase("UNICHAR")) {
             return Types.LONGVARBINARY;
-        } else if(typeName != null && typeName.equalsIgnoreCase("UNIVARCHAR")) {
+        } else if (typeName != null && typeName.equalsIgnoreCase("UNIVARCHAR")) {
             return Types.LONGVARBINARY;
         } else {
             return super.mapUnknownJdbcTypeForColumn(values);
@@ -381,9 +391,14 @@ public class AseDdlReader extends AbstractJdbcDdlReader {
 
     @Override
     protected StringBuilder appendColumn(StringBuilder query, String identifier) {
-        query.append("\"");
+        boolean useQuote = identifier != null && identifier.length() <= platform.getDatabaseInfo().getMaxColumnNameLength() - 2;
+        if (useQuote) {
+            query.append("\"");
+        }
         query.append(identifier);
-        query.append("\"");
+        if (useQuote) {
+            query.append("\"");
+        }
         return query;
     }
 

@@ -20,7 +20,6 @@
  */
 package org.jumpmind.db.platform.mssql;
 
-import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -242,6 +241,7 @@ class MsSql2000DdlReaderTest {
         ResultSetMetaData stmt1RsMetaData = mock(ResultSetMetaData.class);
         when(spyTemplate.getDataSource().getConnection()).thenReturn(connection);
         doReturn(spyTemplate).when(spyPlatform).createSqlTemplate();
+        doReturn(new ArrayList<Row>()).when(spyTemplate).query(ArgumentMatchers.anyString());
         when(spyPlatform.createSqlTemplate()).thenReturn(spyTemplate);
         when(spyPlatform.getSqlTemplateDirty()).thenReturn(spyTemplate);
         when(spyPlatform.getSqlTemplate()).thenReturn(spyTemplate);
@@ -426,6 +426,7 @@ class MsSql2000DdlReaderTest {
         ResultSetMetaData stmt1RsMetaData = mock(ResultSetMetaData.class);
         when(spyTemplate.getDataSource().getConnection()).thenReturn(connection);
         doReturn(spyTemplate).when(spyPlatform).createSqlTemplate();
+        doReturn(new ArrayList<Row>()).when(spyTemplate).query(ArgumentMatchers.anyString());
         when(spyPlatform.createSqlTemplate()).thenReturn(spyTemplate);
         when(spyPlatform.getSqlTemplateDirty()).thenReturn(spyTemplate);
         when(spyPlatform.getSqlTemplate()).thenReturn(spyTemplate);
@@ -623,6 +624,7 @@ class MsSql2000DdlReaderTest {
         ResultSetMetaData stmt1RsMetaData = mock(ResultSetMetaData.class);
         when(spyTemplate.getDataSource().getConnection()).thenReturn(connection);
         doReturn(spyTemplate).when(spyPlatform).createSqlTemplate();
+        doReturn(new ArrayList<Row>()).when(spyTemplate).query(ArgumentMatchers.anyString());
         when(spyPlatform.createSqlTemplate()).thenReturn(spyTemplate);
         when(spyPlatform.getSqlTemplateDirty()).thenReturn(spyTemplate);
         when(spyPlatform.getSqlTemplate()).thenReturn(spyTemplate);
@@ -822,6 +824,7 @@ class MsSql2000DdlReaderTest {
         when(spyPlatform.getSqlTemplateDirty()).thenReturn(spyTemplate);
         when(spyPlatform.getSqlTemplate()).thenReturn(spyTemplate);
         when(spyTemplate.getDataSource()).thenReturn(dataSource);
+        doReturn(new ArrayList<Row>()).when(spyTemplate).query(ArgumentMatchers.anyString());
         when(dataSource.getConnection()).thenReturn(connection);
         when(connection.getMetaData()).thenReturn(metaData);
         when(metaData.getTables(ArgumentMatchers.anyString(), ArgumentMatchers.anyString(), ArgumentMatchers.anyString(),
@@ -1013,6 +1016,7 @@ class MsSql2000DdlReaderTest {
         ResultSetMetaData stmt1RsMetaData = mock(ResultSetMetaData.class);
         when(spyTemplate.getDataSource().getConnection()).thenReturn(connection);
         doReturn(spyTemplate).when(spyPlatform).createSqlTemplate();
+        doReturn(new ArrayList<Row>()).when(spyTemplate).query(ArgumentMatchers.anyString());
         when(spyPlatform.createSqlTemplate()).thenReturn(spyTemplate);
         when(spyPlatform.getSqlTemplateDirty()).thenReturn(spyTemplate);
         when(spyPlatform.getSqlTemplate()).thenReturn(spyTemplate);

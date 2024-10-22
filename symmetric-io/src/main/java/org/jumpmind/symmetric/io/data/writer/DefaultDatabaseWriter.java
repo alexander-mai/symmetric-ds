@@ -30,6 +30,8 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -39,6 +41,7 @@ import org.jumpmind.db.model.Database;
 import org.jumpmind.db.model.IIndex;
 import org.jumpmind.db.model.IndexColumn;
 import org.jumpmind.db.model.NonUniqueIndex;
+import org.jumpmind.db.model.PlatformIndex;
 import org.jumpmind.db.model.Table;
 import org.jumpmind.db.model.TypeMap;
 import org.jumpmind.db.platform.DatabaseInfo;
@@ -54,6 +57,8 @@ import org.jumpmind.db.sql.LogSqlBuilder;
 import org.jumpmind.db.sql.Row;
 import org.jumpmind.db.sql.SqlException;
 import org.jumpmind.db.sql.SqlScriptReader;
+import org.jumpmind.db.sql.mapper.StringMapper;
+import org.jumpmind.symmetric.io.IoConstants;
 import org.jumpmind.symmetric.io.data.Batch;
 import org.jumpmind.symmetric.io.data.CsvData;
 import org.jumpmind.symmetric.io.data.CsvUtils;
@@ -72,12 +77,15 @@ public class DefaultDatabaseWriter extends AbstractDatabaseWriter {
     private final String ATTRIBUTE_CHANNEL_ID_RELOAD = "reload";
     private final String TRUNCATE_PATTERN = "^(truncate)( table)?.*";
     private final String DELETE_PATTERN = "^(delete from).*";
+    private final String ALTER_DEF_CONSTRAINT_PATTERN = " *alter +table +[\\[\\\"]{0,1}(.*?)[\\]\\\"]{0,1} +drop +constraint +[\\[\\\"]{0,1}(df__.*?)[\\]\\\"]{0,1} *";
+    private final String ALTER_TABLE_PATTERN = " *(alter|create) +.*";
     protected IDatabasePlatform platform;
     protected ISqlTransaction transaction;
     protected DmlStatement currentDmlStatement;
     protected Object[] currentDmlValues;
     protected LogSqlBuilder logSqlBuilder = new LogSqlBuilder();
     protected Boolean isCteExpression;
+    protected boolean hasUncommittedDdl;
 
     public DefaultDatabaseWriter(IDatabasePlatform platform) {
         this(platform, null, null);
@@ -185,6 +193,7 @@ public class DefaultDatabaseWriter extends AbstractDatabaseWriter {
             }
         }
         super.commit(earlyCommit);
+        hasUncommittedDdl = false;
     }
 
     protected void commit(boolean earlyCommit, ISqlTransaction newTransaction) {
@@ -202,6 +211,7 @@ public class DefaultDatabaseWriter extends AbstractDatabaseWriter {
             }
         }
         super.commit(earlyCommit);
+        hasUncommittedDdl = false;
     }
 
     @Override
@@ -216,6 +226,7 @@ public class DefaultDatabaseWriter extends AbstractDatabaseWriter {
             }
         }
         super.rollback();
+        hasUncommittedDdl = false;
     }
 
     protected boolean isCteExpression() {
@@ -629,27 +640,35 @@ public class DefaultDatabaseWriter extends AbstractDatabaseWriter {
                     table.removeAllColumnDefaults();
                 }
             }
-            if (!(getTargetPlatform().allowsUniqueIndexDuplicatesWithNulls())) {
-                for (Table table : db.getTables()) {
-                    for (IIndex index : table.getUniqueIndices()) {
-                        boolean needsFixed = false;
-                        for (IndexColumn indexColumn : index.getColumns()) {
-                            Column column = indexColumn.getColumn();
-                            if (column != null && !column.isRequired()) {
-                                needsFixed = true;
-                                log.warn(
-                                        "Detected Unique Index with potential for multiple null values in table: {} on column: {}. Adjusting index to be NonUnique.",
-                                        table.getName(), column.getName());
-                                break;
-                            }
-                        }
-                        if (needsFixed) {
-                            table.removeIndex(index);
-                            IIndex newIndex = new NonUniqueIndex(index.getName());
+            if (writerSettings.isCreateIndexConvertUniqueToNonuniqueWhenColumnsNotRequired()) {
+                if (!(getTargetPlatform().allowsUniqueIndexDuplicatesWithNulls())) {
+                    for (Table table : db.getTables()) {
+                        for (IIndex index : table.getUniqueIndices()) {
+                            boolean needsFixed = false;
                             for (IndexColumn indexColumn : index.getColumns()) {
-                                newIndex.addColumn(indexColumn);
+                                Column column = indexColumn.getColumn();
+                                if (column != null && !column.isRequired()) {
+                                    needsFixed = true;
+                                    log.warn(
+                                            "Detected Unique Index: {} with potential for multiple null values in table: {} on column: {}. Adjusting index to be NonUnique.",
+                                            index.getName(), table.getName(), column.getName());
+                                    break;
+                                }
                             }
-                            table.addIndex(newIndex);
+                            if (needsFixed) {
+                                table.removeIndex(index);
+                                IIndex newIndex = new NonUniqueIndex(index.getName());
+                                for (IndexColumn indexColumn : index.getColumns()) {
+                                    newIndex.addColumn(indexColumn);
+                                }
+                                // Make sure to add the platform index info to the new non-unique index
+                                if (index.getPlatformIndexes() != null) {
+                                    for (PlatformIndex platformIndex : index.getPlatformIndexes().values()) {
+                                        newIndex.addPlatformIndex(platformIndex);
+                                    }
+                                }
+                                table.addIndex(newIndex);
+                            }
                         }
                     }
                 }
@@ -683,19 +702,32 @@ public class DefaultDatabaseWriter extends AbstractDatabaseWriter {
             boolean captureChanges = parsedData.length > 1 && parsedData[1].equals("1");
             List<String> sqlStatements = getSqlStatements(script);
             long count = 0;
+            Pattern defConsPattern = Pattern.compile(ALTER_DEF_CONSTRAINT_PATTERN, Pattern.CASE_INSENSITIVE);
+            Pattern alterPattern = Pattern.compile(ALTER_TABLE_PATTERN, Pattern.CASE_INSENSITIVE);
             for (String sql : sqlStatements) {
                 ISqlTransaction newTransaction = null;
                 try {
                     sql = preprocessSqlStatement(sql);
+                    Matcher defConsMatcher = defConsPattern.matcher(sql);
+                    if (getPlatform().getName().startsWith(DatabaseNamesConstants.MSSQL) && defConsMatcher.matches()) {
+                        String tableName = defConsMatcher.group(1);
+                        String constraintName = defConsMatcher.group(2);
+                        String constraintPrefix = constraintName.substring(0, constraintName.lastIndexOf("__"));
+                        String querySql = "select c.name from sys.default_constraints c inner join sys.objects o on o.object_id = c.parent_object_id "
+                                + "where c.name like ? and o.name = ?";
+                        List<String> names = getTransaction().query(querySql, new StringMapper(), new Object[] { constraintPrefix + "%", tableName },
+                                new int[] { Types.VARCHAR, Types.VARCHAR });
+                        if (names.size() > 0) {
+                            sql = sql.replace(constraintName, names.get(0));
+                        }
+                    }
                     if (captureChanges) {
                         newTransaction = getPlatform().getSqlTemplate().startSqlTransaction();
                         if (sql.matches(TRUNCATE_PATTERN) && getPlatform().getName().equals(DatabaseNamesConstants.DB2)) {
                             commit(true, newTransaction);
                         }
                         newTransaction.prepare(sql);
-                        if (log.isDebugEnabled()) {
-                            log.debug("About to run: {}", sql);
-                        }
+                        log.info("Running SQL event: {}", sql);
                         count += newTransaction.prepareAndExecute(sql);
                         if (log.isDebugEnabled()) {
                             log.debug("{} rows updated when running: {}", count, sql);
@@ -705,14 +737,14 @@ public class DefaultDatabaseWriter extends AbstractDatabaseWriter {
                             commit(true);
                         }
                         prepare(sql, data);
-                        if (log.isDebugEnabled()) {
-                            log.debug("About to run: {}", sql);
-                        }
+                        log.info("Running SQL event: {}", sql);
                         count += prepareAndExecute(sql, data);
                         if (log.isDebugEnabled()) {
                             log.debug("{} rows updated when running: {}", count, sql);
                         }
                     }
+                    Matcher alterMatcher = alterPattern.matcher(sql);
+                    hasUncommittedDdl |= alterMatcher.matches();
                 } catch (Error ex) {
                     log.error("Failed to run the following sql: {}", sql);
                     if (newTransaction != null) {
@@ -722,12 +754,13 @@ public class DefaultDatabaseWriter extends AbstractDatabaseWriter {
                         throw ex;
                     }
                 } catch (SqlException ex) {
+                    log.info("Attempting to correct SQL statement failure", ex);
                     if (platform.getSqlTemplate().doesObjectAlreadyExist(ex)) {
                         String massagedSql = platform.massageForObjectAlreadyExists(sql);
                         if (!sql.equals(massagedSql)) {
                             if (massagedSql.contains("alter")) {
                                 log.info("Changing the following sql to an alter because the created object already exists: {}", sql);
-                            } else if (massagedSql.contains("create or replace")) {
+                            } else if (massagedSql.contains("create or replace") || massagedSql.contains("create or alter")) {
                                 log.info("Changing the following sql to a create or replace because the created object already exists: {}", sql);
                             } else if (massagedSql.startsWith("drop")) {
                                 log.info("Dropping the object before running the following sql because the created object already exists: {}", sql);
@@ -1160,29 +1193,52 @@ public class DefaultDatabaseWriter extends AbstractDatabaseWriter {
 
     @Override
     protected Table lookupTableAtTarget(Table sourceTable) {
-        String tableNameKey = sourceTable.getTableKey();
-        Table table = targetTables.get(tableNameKey);
+        String tableNameKey = getTableKey(sourceTable);
+        Table table = lookupTableFromCache(sourceTable, tableNameKey);
         if (table == null) {
             try {
-                table = getPlatform(sourceTable).getTableFromCache(sourceTable.getCatalog(), sourceTable.getSchema(),
-                        sourceTable.getName(), false);
+                if (hasUncommittedDdl) {
+                    table = getPlatform(sourceTable).readTableFromDatabase(getTransaction(sourceTable), sourceTable.getCatalog(), sourceTable.getSchema(),
+                            sourceTable.getName());
+                } else {
+                    table = getPlatform(sourceTable).getTableFromCache(sourceTable.getCatalog(), sourceTable.getSchema(),
+                            sourceTable.getName(), false);
+                }
                 if (table != null) {
                     table = table.copyAndFilterColumns(sourceTable.getColumnNames(),
                             sourceTable.getPrimaryKeyColumnNames(), writerSettings.isUsePrimaryKeysFromSource(), false);
                     if (table.getPrimaryKeyColumnCount() == 0) {
                         table = getPlatform(table).makeAllColumnsPrimaryKeys(table);
                     }
-                    Column[] columns = table.getColumns();
-                    for (Column column : columns) {
-                        if (column != null) {
-                            int typeCode = column.getMappedTypeCode();
-                            if (writerSettings.isTreatDateTimeFieldsAsVarchar() && (typeCode == Types.DATE
-                                    || typeCode == Types.TIME || typeCode == Types.TIMESTAMP)) {
-                                column.setMappedTypeCode(Types.VARCHAR);
+                    if (writerSettings.isTreatDateTimeFieldsAsVarchar() && (batch.getChannelId() != null
+                            && !batch.getChannelId().equals(IoConstants.CHANNEL_CONFIG)
+                            && !batch.getChannelId().equals(IoConstants.CHANNEL_MONITOR))) {
+                        Column[] columns = table.getColumns();
+                        for (Column column : columns) {
+                            if (column != null) {
+                                int typeCode = column.getMappedTypeCode();
+                                if (typeCode == Types.DATE || typeCode == Types.TIME || typeCode == Types.TIMESTAMP) {
+                                    column.setMappedTypeCode(Types.VARCHAR);
+                                }
                             }
                         }
                     }
-                    targetTables.put(tableNameKey, table);
+                    if (writerSettings.isTreatBitFieldsAsInteger() && (batch.getChannelId() != null
+                            && !batch.getChannelId().equals(IoConstants.CHANNEL_CONFIG)
+                            && !batch.getChannelId().equals(IoConstants.CHANNEL_MONITOR))) {
+                        Column[] columns = table.getColumns();
+                        for (Column column : columns) {
+                            if (column != null) {
+                                if (column.getJdbcTypeName().equals("BIT") && column.getSizeAsInt() > 1) {
+                                    column.setMappedTypeCode(Types.INTEGER);
+                                }
+                            }
+                        }
+                    }
+                    if (table.hasGeneratedColumns()) {
+                        removeGeneratedColumns(table);
+                    }
+                    putTableInCache(tableNameKey, table);
                 }
             } catch (SqlException sqle) {
                 // TODO: is there really a "does not exist" exception or should this be removed? copied from AbstractJdbcDdlReader.readTable()
@@ -1192,6 +1248,30 @@ public class DefaultDatabaseWriter extends AbstractDatabaseWriter {
             }
         }
         return table;
+    }
+
+    protected void removeGeneratedColumns(Table table) {
+        List<Column> adjustedColumns = new ArrayList<Column>();
+        for (int i = 0; i < table.getColumnCount(); i++) {
+            Column col = table.getColumn(i);
+            if (!col.isGenerated()) {
+                adjustedColumns.add(col);
+            }
+        }
+        table.removeAllColumns();
+        table.addColumns(adjustedColumns);
+    }
+
+    protected String getTableKey(Table table) {
+        return table.getTableKey();
+    }
+
+    protected Table lookupTableFromCache(Table sourceTable, String tableKey) {
+        return targetTables.get(tableKey);
+    }
+
+    protected void putTableInCache(String tableKey, Table table) {
+        targetTables.put(tableKey, table);
     }
 
     public DmlStatement getCurrentDmlStatement() {

@@ -27,6 +27,7 @@ import java.io.InputStreamReader;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.net.MalformedURLException;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.security.UnrecoverableKeyException;
 import java.sql.SQLException;
@@ -87,8 +88,6 @@ import org.jumpmind.symmetric.service.IGroupletService;
 import org.jumpmind.symmetric.service.IIncomingBatchService;
 import org.jumpmind.symmetric.service.IInitialLoadService;
 import org.jumpmind.symmetric.service.ILoadFilterService;
-import org.jumpmind.symmetric.service.IMailService;
-import org.jumpmind.symmetric.service.IMonitorService;
 import org.jumpmind.symmetric.service.INodeCommunicationService;
 import org.jumpmind.symmetric.service.INodeService;
 import org.jumpmind.symmetric.service.IOfflinePullService;
@@ -119,8 +118,6 @@ import org.jumpmind.symmetric.service.impl.GroupletService;
 import org.jumpmind.symmetric.service.impl.IncomingBatchService;
 import org.jumpmind.symmetric.service.impl.InitialLoadService;
 import org.jumpmind.symmetric.service.impl.LoadFilterService;
-import org.jumpmind.symmetric.service.impl.MailService;
-import org.jumpmind.symmetric.service.impl.MonitorService;
 import org.jumpmind.symmetric.service.impl.NodeCommunicationService;
 import org.jumpmind.symmetric.service.impl.NodeService;
 import org.jumpmind.symmetric.service.impl.OfflinePullService;
@@ -200,10 +197,8 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
     protected IStagingManager stagingManager;
     protected INodeCommunicationService nodeCommunicationService;
     protected IFileSyncService fileSyncService;
-    protected IMailService mailService;
     protected IContextService contextService;
     protected IUpdateService updateService;
-    protected IMonitorService monitorService;
     protected ICacheManager cacheManager;
     protected Date lastRestartTime = null;
 
@@ -243,6 +238,17 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
         } else {
             return null;
         }
+    }
+
+    public static ISymmetricEngine findEngineByNodeId(String nodeId) {
+        if (nodeId != null) {
+            for (ISymmetricEngine engine : registeredEnginesByName.values()) {
+                if (nodeId.equals(engine.getNodeId())) {
+                    return engine;
+                }
+            }
+        }
+        return null;
     }
 
     public void setDeploymentType(String deploymentType) {
@@ -308,7 +314,7 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
         this.statisticManager = createStatisticManager();
         this.concurrentConnectionManager = new ConcurrentConnectionManager(parameterService,
                 statisticManager);
-        this.purgeService = new PurgeService(parameterService, symmetricDialect, clusterService,
+        this.purgeService = new PurgeService(parameterService, symmetricDialect, clusterService, dataService, sequenceService,
                 statisticManager, extensionService, contextService);
         this.transformService = new TransformService(this, symmetricDialect);
         this.loadFilterService = new LoadFilterService(this, symmetricDialect);
@@ -340,8 +346,6 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
                 configurationService, extensionService, offlineTransportManager);
         this.fileSyncService = buildFileSyncService();
         this.fileSyncExtractorService = new FileSyncExtractorService(this);
-        this.mailService = new MailService(parameterService, securityService, symmetricDialect);
-        this.monitorService = buildMonitorService(symmetricDialect);
         String updateServiceClassName = properties.get(ParameterConstants.UPDATE_SERVICE_CLASS);
         if (updateServiceClassName == null) {
             this.updateService = new UpdateService(this);
@@ -356,8 +360,7 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
         this.jobManager = createJobManager();
         extensionService.addExtensionPoint(new DefaultOfflineServerListener(
                 statisticManager, nodeService, outgoingBatchService));
-        IOfflineClientListener defaultlistener = new DefaultOfflineClientListener(parameterService,
-                nodeService);
+        IOfflineClientListener defaultlistener = new DefaultOfflineClientListener(this);
         extensionService.addExtensionPoint(defaultlistener);
         if (registerEngine) {
             registerHandleToEngine();
@@ -393,10 +396,6 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
             IParameterService parameterService,
             IConfigurationService configurationService, ISymmetricDialect symmetricDialect) {
         return new NodeCommunicationService(clusterService, nodeService, parameterService, configurationService, symmetricDialect);
-    }
-
-    protected IMonitorService buildMonitorService(ISymmetricDialect symmetricDialect) {
-        return new MonitorService(this, symmetricDialect);
     }
 
     abstract protected IStagingManager createStagingManager();
@@ -501,6 +500,7 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
             parameterService.setDatabaseHasBeenInitialized(true);
             parameterService.rereadParameters();
             extensionService.refresh();
+            stagingManager.clean(0);
         }
         node = nodeService.findIdentity();
         if (node == null && parameterService.isRegistrationServer()
@@ -731,11 +731,16 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
                 }
             }
             if (badNodeSecurities.size() > 0) {
+                List<String> nodeIds = new ArrayList<String>();
+                for (NodeSecurity nodeSecurity : badNodeSecurities) {
+                    nodeIds.add(nodeSecurity.getNodeId());
+                }
                 if (parameterService.is(ParameterConstants.CLUSTER_LOCKING_ENABLED)) {
                     throw new IllegalStateException("Unable to decrypt " + badNodeSecurities.size()
-                            + " node security rows.  Copy the security/keystore file from a working node in the cluster.");
+                            + " node security rows.  Copy the security/keystore file from a working node in the cluster.  Nodes affected: " + nodeIds);
                 } else if (parameterService.isRegistrationServer()) {
-                    log.error("Found {} bad node securities.  Attempting to re-open registration to fix them.", badNodeSecurities.size());
+                    log.error("Found {} bad node securities.  Attempting to re-open registration to fix them.  Nodes affected: {}", badNodeSecurities.size(),
+                            nodeIds);
                     String myNodeId = nodeService.findIdentityNodeId();
                     for (NodeSecurity nodeSecurity : badNodeSecurities) {
                         if (nodeSecurity.getNodeId().equals(myNodeId)) {
@@ -744,13 +749,12 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
                             nodeSecurity.setNodePassword(password);
                             nodeService.updateNodeSecurity(nodeSecurity);
                         } else {
-                            registrationService.reOpenRegistration(nodeSecurity.getNodeId());
+                            registrationService.reOpenRegistration(nodeSecurity.getNodeId(), true);
                         }
                     }
                 } else {
-                    log.error(
-                            "Found {} bad node securities.  Removing identity and attempting re-registration to fix them.  You may need to approve the registration request.",
-                            badNodeSecurities.size());
+                    log.error("Found {} bad node securities.  Removing identity and attempting re-registration to fix them.  " +
+                            "You may need to approve the registration request.  Nodes affected: {}", badNodeSecurities.size(), nodeIds);
                     nodeService.deleteIdentity();
                     node = null;
                 }
@@ -996,7 +1000,15 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
                 log.debug("The current version of {} is newer than the last running version of {}",
                         Version.version(), node.getSymmetricVersion());
             }
-            configurationValid = true;
+            try {
+                String syncUrl = transportManager.resolveURL(parameterService.getSyncUrl(), parameterService.getRegistrationUrl());
+                new URL(syncUrl).toURI();
+            } catch (MalformedURLException e) {
+                errorMessage = String.format("The %s property is not a valid URL: %s", ParameterConstants.SYNC_URL, parameterService.getSyncUrl());
+            } catch (URISyntaxException e) {
+                errorMessage = String.format("The %s property is not a valid URI: %s", ParameterConstants.SYNC_URL, parameterService.getSyncUrl());
+            }
+            configurationValid = (errorMessage == null);
         }
         if (errorMessage != null) {
             log.error(errorMessage);
@@ -1187,10 +1199,6 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
         return extensionService;
     }
 
-    public IMailService getMailService() {
-        return mailService;
-    }
-
     public IContextService getContextService() {
         return contextService;
     }
@@ -1286,10 +1294,6 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
 
     public IUpdateService getUpdateService() {
         return updateService;
-    }
-
-    public IMonitorService getMonitorService() {
-        return monitorService;
     }
 
     @Override

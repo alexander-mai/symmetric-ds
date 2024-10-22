@@ -21,12 +21,17 @@
 package org.jumpmind.symmetric.route;
 
 import static org.junit.Assert.assertEquals;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
 
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
 import org.jumpmind.db.model.Table;
+import org.jumpmind.symmetric.AbstractSymmetricEngine;
+import org.jumpmind.symmetric.ISymmetricEngine;
+import org.jumpmind.symmetric.db.ISymmetricDialect;
 import org.jumpmind.symmetric.io.data.DataEventType;
 import org.jumpmind.symmetric.model.Data;
 import org.jumpmind.symmetric.model.DataMetaData;
@@ -35,12 +40,18 @@ import org.jumpmind.symmetric.model.NodeChannel;
 import org.jumpmind.symmetric.model.Router;
 import org.jumpmind.symmetric.model.TriggerHistory;
 import org.jumpmind.symmetric.route.ColumnMatchDataRouter.Expression;
+import org.jumpmind.symmetric.service.INodeService;
 import org.junit.jupiter.api.Test;
 
 public class ColumnMatchDataRouterTest {
     @Test
     public void testExpressionUsingLineFeedsParsing() {
-        ColumnMatchDataRouter router = new ColumnMatchDataRouter();
+        ISymmetricEngine engine = mock(AbstractSymmetricEngine.class);
+        INodeService nodeService = mock(INodeService.class);
+        ISymmetricDialect symmetricDialect = mock(ISymmetricDialect.class);
+        doReturn(symmetricDialect).when(engine).getSymmetricDialect();
+        doReturn(nodeService).when(engine).getNodeService();
+        ColumnMatchDataRouter router = new ColumnMatchDataRouter(engine);
         List<Expression> expressions = router.parse("one=two\ntwo=three\rthree!=:EXTERNAL_ID");
         assertEquals(3, expressions.size());
         assertEquals("two", expressions.get(0).tokens[1]);
@@ -50,7 +61,12 @@ public class ColumnMatchDataRouterTest {
 
     @Test
     public void testExpressionOrParsing() {
-        ColumnMatchDataRouter router = new ColumnMatchDataRouter();
+        ISymmetricEngine engine = mock(AbstractSymmetricEngine.class);
+        INodeService nodeService = mock(INodeService.class);
+        ISymmetricDialect symmetricDialect = mock(ISymmetricDialect.class);
+        doReturn(symmetricDialect).when(engine).getSymmetricDialect();
+        doReturn(nodeService).when(engine).getNodeService();
+        ColumnMatchDataRouter router = new ColumnMatchDataRouter(engine);
         List<Expression> expressions = router.parse("one=door OR two=three or three!=:EXTERNAL_ID");
         assertEquals(3, expressions.size());
         assertEquals("door", expressions.get(0).tokens[1]);
@@ -60,7 +76,12 @@ public class ColumnMatchDataRouterTest {
 
     @Test
     public void testExpressionTickParsing() {
-        ColumnMatchDataRouter router = new ColumnMatchDataRouter();
+        ISymmetricEngine engine = mock(AbstractSymmetricEngine.class);
+        INodeService nodeService = mock(INodeService.class);
+        ISymmetricDialect symmetricDialect = mock(ISymmetricDialect.class);
+        doReturn(symmetricDialect).when(engine).getSymmetricDialect();
+        doReturn(nodeService).when(engine).getNodeService();
+        ColumnMatchDataRouter router = new ColumnMatchDataRouter(engine);
         List<Expression> expressions = router.parse("one='two three' OR four='five'\r\nor six=isn't \r\n seven='can''t'" +
                 " or eight='yall \n nine=' ten  ' or eleven  =  'twelve'  ");
         assertEquals(7, expressions.size());
@@ -82,7 +103,12 @@ public class ColumnMatchDataRouterTest {
 
     @Test
     public void testExpressionOrAndLineFeedsParsing() {
-        ColumnMatchDataRouter router = new ColumnMatchDataRouter();
+        ISymmetricEngine engine = mock(AbstractSymmetricEngine.class);
+        INodeService nodeService = mock(INodeService.class);
+        ISymmetricDialect symmetricDialect = mock(ISymmetricDialect.class);
+        doReturn(symmetricDialect).when(engine).getSymmetricDialect();
+        doReturn(nodeService).when(engine).getNodeService();
+        ColumnMatchDataRouter router = new ColumnMatchDataRouter(engine);
         List<Expression> expressions = router.parse("one=two OR three=four\r\nor   five!=:EXTERNAL_ID");
         assertEquals(3, expressions.size());
         assertEquals("two", expressions.get(0).tokens[1]);
@@ -93,21 +119,33 @@ public class ColumnMatchDataRouterTest {
 
     @Test
     public void testExpressionWithOrInColumnName() {
-        ColumnMatchDataRouter router = new ColumnMatchDataRouter();
+        ISymmetricEngine engine = mock(AbstractSymmetricEngine.class);
+        INodeService nodeService = mock(INodeService.class);
+        ISymmetricDialect symmetricDialect = mock(ISymmetricDialect.class);
+        doReturn(symmetricDialect).when(engine).getSymmetricDialect();
+        doReturn(nodeService).when(engine).getNodeService();
+        ColumnMatchDataRouter router = new ColumnMatchDataRouter(engine);
         List<Expression> expressions = router.parse("ORDER_ID=:EXTERNAL_ID");
         assertEquals(1, expressions.size());
         assertEquals("ORDER_ID", expressions.get(0).tokens[0]);
         assertEquals(":EXTERNAL_ID", expressions.get(0).tokens[1]);
     }
 
+    //
     @Test
     public void testExpressionEqualsNodeId() {
-        ColumnMatchDataRouter router = new ColumnMatchDataRouter();
-        SimpleRouterContext routingContext = new SimpleRouterContext();
         HashSet<Node> nodes = new HashSet<Node>();
         nodes.add(new Node("100", "client"));
         nodes.add(new Node("200", "client"));
         nodes.add(new Node("300", "client"));
+        ISymmetricEngine engine = mock(AbstractSymmetricEngine.class);
+        INodeService nodeService = mock(INodeService.class);
+        ISymmetricDialect symmetricDialect = mock(ISymmetricDialect.class);
+        doReturn(symmetricDialect).when(engine).getSymmetricDialect();
+        doReturn(nodeService).when(engine).getNodeService();
+        doReturn(new Node("100", "client")).when(nodeService).findIdentity(true, true);
+        ColumnMatchDataRouter router = new ColumnMatchDataRouter(engine);
+        SimpleRouterContext routingContext = new SimpleRouterContext();
         TriggerHistory triggerHist = new TriggerHistory("mytable", "ID", "ID,NODE_ID,COLUMN2");
         Data data = new Data();
         data.setDataId(1);
@@ -127,12 +165,18 @@ public class ColumnMatchDataRouterTest {
 
     @Test
     public void testExpressionNotEqualsNodeId() {
-        ColumnMatchDataRouter router = new ColumnMatchDataRouter();
-        SimpleRouterContext routingContext = new SimpleRouterContext();
         HashSet<Node> nodes = new HashSet<Node>();
         nodes.add(new Node("100", "client"));
         nodes.add(new Node("200", "client"));
         nodes.add(new Node("300", "client"));
+        ISymmetricEngine engine = mock(AbstractSymmetricEngine.class);
+        INodeService nodeService = mock(INodeService.class);
+        ISymmetricDialect symmetricDialect = mock(ISymmetricDialect.class);
+        doReturn(symmetricDialect).when(engine).getSymmetricDialect();
+        doReturn(nodeService).when(engine).getNodeService();
+        doReturn(new Node("100", "client")).when(nodeService).findIdentity(true, true);
+        ColumnMatchDataRouter router = new ColumnMatchDataRouter(engine);
+        SimpleRouterContext routingContext = new SimpleRouterContext();
         TriggerHistory triggerHist = new TriggerHistory("mytable", "ID", "ID,NODE_ID,COLUMN2");
         Data data = new Data();
         data.setDataId(1);
@@ -153,12 +197,18 @@ public class ColumnMatchDataRouterTest {
 
     @Test
     public void testExpressionEqualsExternalId() {
-        ColumnMatchDataRouter router = new ColumnMatchDataRouter();
-        SimpleRouterContext routingContext = new SimpleRouterContext();
         HashSet<Node> nodes = new HashSet<Node>();
         nodes.add(new Node("1000", "client"));
         nodes.add(new Node("100", "client"));
         nodes.add(new Node("10", "client"));
+        ISymmetricEngine engine = mock(AbstractSymmetricEngine.class);
+        INodeService nodeService = mock(INodeService.class);
+        ISymmetricDialect symmetricDialect = mock(ISymmetricDialect.class);
+        doReturn(symmetricDialect).when(engine).getSymmetricDialect();
+        doReturn(nodeService).when(engine).getNodeService();
+        doReturn(new Node("100", "client")).when(nodeService).findIdentity(true, true);
+        ColumnMatchDataRouter router = new ColumnMatchDataRouter(engine);
+        SimpleRouterContext routingContext = new SimpleRouterContext();
         TriggerHistory triggerHist = new TriggerHistory("mytable", "ID", "ID,STORE_ID,COLUMN2");
         Data data = new Data();
         data.setDataId(1);
@@ -178,14 +228,20 @@ public class ColumnMatchDataRouterTest {
 
     @Test
     public void testExpressionEqualsGroupId() {
-        ColumnMatchDataRouter router = new ColumnMatchDataRouter();
-        SimpleRouterContext routingContext = new SimpleRouterContext();
         HashSet<Node> nodes = new HashSet<Node>();
         nodes.add(new Node("10", "server"));
         nodes.add(new Node("20", "server"));
         nodes.add(new Node("3", "client"));
         nodes.add(new Node("2", "client"));
         nodes.add(new Node("1", "client"));
+        ISymmetricEngine engine = mock(AbstractSymmetricEngine.class);
+        INodeService nodeService = mock(INodeService.class);
+        ISymmetricDialect symmetricDialect = mock(ISymmetricDialect.class);
+        doReturn(symmetricDialect).when(engine).getSymmetricDialect();
+        doReturn(nodeService).when(engine).getNodeService();
+        doReturn(new Node("10", "server")).when(nodeService).findIdentity(true, true);
+        ColumnMatchDataRouter router = new ColumnMatchDataRouter(engine);
+        SimpleRouterContext routingContext = new SimpleRouterContext();
         TriggerHistory triggerHist = new TriggerHistory("mytable", "ID", "ID,GROUP_ID,COLUMN2");
         Data data = new Data();
         data.setDataId(1);
@@ -207,11 +263,17 @@ public class ColumnMatchDataRouterTest {
 
     @Test
     public void testExpressionEqualsNull() {
-        ColumnMatchDataRouter router = new ColumnMatchDataRouter();
-        SimpleRouterContext routingContext = new SimpleRouterContext();
         HashSet<Node> nodes = new HashSet<Node>();
         nodes.add(new Node("100", "client"));
         nodes.add(new Node("200", "client"));
+        ISymmetricEngine engine = mock(AbstractSymmetricEngine.class);
+        INodeService nodeService = mock(INodeService.class);
+        ISymmetricDialect symmetricDialect = mock(ISymmetricDialect.class);
+        doReturn(symmetricDialect).when(engine).getSymmetricDialect();
+        doReturn(nodeService).when(engine).getNodeService();
+        doReturn(new Node("100", "client")).when(nodeService).findIdentity(true, true);
+        ColumnMatchDataRouter router = new ColumnMatchDataRouter(engine);
+        SimpleRouterContext routingContext = new SimpleRouterContext();
         TriggerHistory triggerHist = new TriggerHistory("mytable", "ID", "ID,NODE_ID,COLUMN2");
         Data data = new Data();
         data.setDataId(1);
@@ -232,11 +294,17 @@ public class ColumnMatchDataRouterTest {
 
     @Test
     public void testExpressionNotEqualsNull() {
-        ColumnMatchDataRouter router = new ColumnMatchDataRouter();
-        SimpleRouterContext routingContext = new SimpleRouterContext();
         HashSet<Node> nodes = new HashSet<Node>();
         nodes.add(new Node("100", "client"));
         nodes.add(new Node("200", "client"));
+        ISymmetricEngine engine = mock(AbstractSymmetricEngine.class);
+        INodeService nodeService = mock(INodeService.class);
+        ISymmetricDialect symmetricDialect = mock(ISymmetricDialect.class);
+        doReturn(symmetricDialect).when(engine).getSymmetricDialect();
+        doReturn(nodeService).when(engine).getNodeService();
+        doReturn(new Node("100", "client")).when(nodeService).findIdentity(true, true);
+        ColumnMatchDataRouter router = new ColumnMatchDataRouter(engine);
+        SimpleRouterContext routingContext = new SimpleRouterContext();
         TriggerHistory triggerHist = new TriggerHistory("mytable", "ID", "ID,NODE_ID,COLUMN2");
         Data data = new Data();
         data.setDataId(1);
@@ -255,12 +323,18 @@ public class ColumnMatchDataRouterTest {
 
     @Test
     public void testExpressionExternalData() {
-        ColumnMatchDataRouter router = new ColumnMatchDataRouter();
-        SimpleRouterContext routingContext = new SimpleRouterContext();
         HashSet<Node> nodes = new HashSet<Node>();
         nodes.add(new Node("100", "client"));
         nodes.add(new Node("200", "client"));
         nodes.add(new Node("300", "client"));
+        ISymmetricEngine engine = mock(AbstractSymmetricEngine.class);
+        INodeService nodeService = mock(INodeService.class);
+        ISymmetricDialect symmetricDialect = mock(ISymmetricDialect.class);
+        doReturn(symmetricDialect).when(engine).getSymmetricDialect();
+        doReturn(nodeService).when(engine).getNodeService();
+        doReturn(new Node("100", "client")).when(nodeService).findIdentity(true, true);
+        ColumnMatchDataRouter router = new ColumnMatchDataRouter(engine);
+        SimpleRouterContext routingContext = new SimpleRouterContext();
         TriggerHistory triggerHist = new TriggerHistory("mytable", "ID", "ID,NODE_ID,COLUMN2");
         Data data = new Data();
         data.setDataId(1);
@@ -281,13 +355,19 @@ public class ColumnMatchDataRouterTest {
 
     @Test
     public void testExpressionContains() {
-        ColumnMatchDataRouter router = new ColumnMatchDataRouter();
-        SimpleRouterContext routingContext = new SimpleRouterContext();
         HashSet<Node> nodes = new HashSet<Node>();
         nodes.add(new Node("100", "client"));
         nodes.add(new Node("200", "client"));
         nodes.add(new Node("300", "client"));
         nodes.add(new Node("1000", "client"));
+        ISymmetricEngine engine = mock(AbstractSymmetricEngine.class);
+        INodeService nodeService = mock(INodeService.class);
+        ISymmetricDialect symmetricDialect = mock(ISymmetricDialect.class);
+        doReturn(symmetricDialect).when(engine).getSymmetricDialect();
+        doReturn(nodeService).when(engine).getNodeService();
+        doReturn(new Node("100", "client")).when(nodeService).findIdentity(true, true);
+        ColumnMatchDataRouter router = new ColumnMatchDataRouter(engine);
+        SimpleRouterContext routingContext = new SimpleRouterContext();
         TriggerHistory triggerHist = new TriggerHistory("mytable", "ID", "ID,NODE_ID,COLUMN2");
         Data data = new Data();
         data.setDataId(1);
@@ -309,13 +389,19 @@ public class ColumnMatchDataRouterTest {
 
     @Test
     public void testExpressionNotContains() {
-        ColumnMatchDataRouter router = new ColumnMatchDataRouter();
-        SimpleRouterContext routingContext = new SimpleRouterContext();
         HashSet<Node> nodes = new HashSet<Node>();
         nodes.add(new Node("100", "client"));
         nodes.add(new Node("200", "client"));
         nodes.add(new Node("300", "client"));
         nodes.add(new Node("1000", "client"));
+        ISymmetricEngine engine = mock(AbstractSymmetricEngine.class);
+        INodeService nodeService = mock(INodeService.class);
+        ISymmetricDialect symmetricDialect = mock(ISymmetricDialect.class);
+        doReturn(symmetricDialect).when(engine).getSymmetricDialect();
+        doReturn(nodeService).when(engine).getNodeService();
+        doReturn(new Node("100", "client")).when(nodeService).findIdentity(true, true);
+        ColumnMatchDataRouter router = new ColumnMatchDataRouter(engine);
+        SimpleRouterContext routingContext = new SimpleRouterContext();
         TriggerHistory triggerHist = new TriggerHistory("mytable", "ID", "ID,NODE_ID,COLUMN2");
         Data data = new Data();
         data.setDataId(1);

@@ -49,6 +49,8 @@ public interface ITriggerRouterService {
 
     public List<TriggerHistory> getActiveTriggerHistories(String tableName);
 
+    public Map<String, TriggerHistory> getLastErrorTriggerHistories();
+
     public List<TriggerRouter> getTriggerRouters(boolean refreshCache);
 
     public List<TriggerRouter> getTriggerRoutersFromDatabase();
@@ -162,6 +164,8 @@ public interface ITriggerRouterService {
     public void deleteAllTriggers();
 
     public void dropTriggers();
+
+    public void dropTriggers(boolean includeSymTriggers);
 
     public void dropTriggers(Set<String> tables);
 

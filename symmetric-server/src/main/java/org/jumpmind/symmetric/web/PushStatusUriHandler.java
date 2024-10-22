@@ -23,11 +23,11 @@ package org.jumpmind.symmetric.web;
 import java.io.IOException;
 import java.util.Map;
 
-import javax.servlet.ServletException;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
-import org.apache.commons.fileupload.FileUploadException;
+import org.apache.commons.fileupload2.core.FileUploadException;
 import org.jumpmind.symmetric.service.INodeCommunicationService;
 import org.jumpmind.symmetric.service.IParameterService;
 import org.springframework.util.StringUtils;
@@ -56,7 +56,7 @@ public class PushStatusUriHandler extends AbstractUriHandler {
             } catch (Exception ex) {
                 String msg = "Failed to parse batchToSendCountParam [" + batchToSendCountParam + "] " + req;
                 log.warn(msg, ex);
-                res.sendError(HttpServletResponse.SC_BAD_REQUEST, "Couldn't parse batch_to_send_count.");
+                res.sendError(WebConstants.SC_BAD_REQUEST, "Couldn't parse batch_to_send_count.");
             }
         }
     }

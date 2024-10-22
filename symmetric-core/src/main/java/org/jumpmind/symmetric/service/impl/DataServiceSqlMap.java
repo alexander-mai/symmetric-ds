@@ -91,7 +91,7 @@ public class DataServiceSqlMap extends AbstractSqlMap {
         putSql("whereTargetNodeId", " where target_node_id = ?");
         putSql("andSourceNodeId", " and source_node_id = ?");
         putSql("andTargetNodeId", " and target_node_id = ?");
-        putSql("selectTableReloadStatusByLoadId", "select source_node_id, target_node_id, load_id, "
+        putSql("selectTableReloadStatusByLoadIdSourceNodeId", "select source_node_id, target_node_id, load_id, "
                 + " end_data_batch_id, start_data_batch_id, "
                 + " setup_batch_count, data_batch_count, finalize_batch_count, "
                 + " setup_batch_loaded, data_batch_loaded, finalize_batch_loaded, "
@@ -100,7 +100,7 @@ public class DataServiceSqlMap extends AbstractSqlMap {
                 + " start_time, end_time, last_update_time, last_update_by, "
                 + " error_flag, sql_state, sql_code, sql_message, batch_bulk_load_count "
                 + " from $(table_reload_status) "
-                + " where load_id = ?");
+                + " where load_id = ? and source_node_id = ?");
         putSql("selectTableReloadStatusByTargetNodeId", "select source_node_id, target_node_id, load_id, "
                 + " end_data_batch_id, start_data_batch_id, "
                 + " setup_batch_count, data_batch_count, finalize_batch_count, "
@@ -117,26 +117,27 @@ public class DataServiceSqlMap extends AbstractSqlMap {
                 "update $(table_reload_request) set last_update_time = ?, processed = 1 where source_node_id=? and target_node_id=? and trigger_id=? and router_id=? and create_time=?");
         putSql("updateTableReloadRequestLoadId",
                 "update $(table_reload_request) set load_id = ?, last_update_time = ? where target_node_id = ? and source_node_id = ? and trigger_id = ? and router_id = ? and create_time = ?");
-        putSql("updateTableReloadStatusTableCount", "update $(table_reload_status) set table_count = ?, last_update_time = ? where load_id = ?");
+        putSql("updateTableReloadStatusTableCount",
+                "update $(table_reload_status) set table_count = ?, last_update_time = ? where load_id = ? and source_node_id = ?");
         putSql("updateTableReloadStatusDataCounts", "update $(table_reload_status) set "
                 + " start_data_batch_id = ?, end_data_batch_id = ?, "
                 + " data_batch_count = case when data_batch_count = -1 then 0 else data_batch_count end + ?, "
                 + " rows_count = rows_count + ?, "
                 + " last_update_time = ?  "
-                + " where load_id = ?");
+                + " where load_id = ? and source_node_id = ?");
         putSql("updateTableReloadStatusDataCountsNoParamsInSelect", "update $(table_reload_status) set "
                 + " start_data_batch_id = ?, end_data_batch_id = ?, "
                 + " data_batch_count = case when data_batch_count = -1 then 0 else data_batch_count end + $(batchCount), "
                 + " rows_count = rows_count + $(rowCount), "
                 + " last_update_time = ?  "
-                + " where load_id = ?");
+                + " where load_id = ? and source_node_id = ?");
         putSql("insertTableReloadStatus",
                 "insert into $(table_reload_status) (load_id, target_node_id, source_node_id, full_load, start_time, last_update_time, data_batch_count, setup_batch_count, finalize_batch_count) "
                         + "values (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-        putSql("deleteTableReloadStatus", "delete from $(table_reload_status) where load_id = ?");
+        putSql("deleteTableReloadStatus", "delete from $(table_reload_status) where load_id = ? and source_node_id = ?");
         putSql("updateTableReloadStatusSetupCount", "update $(table_reload_status) set "
                 + " setup_batch_count = ?, last_update_time = ? "
-                + " where load_id = ?");
+                + " where load_id = ? and source_node_id = ?");
         putSql("updateTableReloadStatusDataLoaded", "update $(table_reload_status) "
                 + " set completed = case when ("
                 + "    (data_batch_count > -1 and data_batch_count <= (case when ? between start_data_batch_id and end_data_batch_id then data_batch_loaded + ? else data_batch_loaded end)) and "
@@ -156,7 +157,7 @@ public class DataServiceSqlMap extends AbstractSqlMap {
                 + " batch_bulk_load_count = case when ? between start_data_batch_id and end_data_batch_id then batch_bulk_load_count + ? else batch_bulk_load_count end, "
                 + " error_flag = case when error_batch_id = ? then 0 else error_flag end, "
                 + " error_batch_id = case when error_batch_id = ? then null else error_batch_id end "
-                + " where load_id = ? and completed = 0");
+                + " where load_id = ? and source_node_id = ? and completed = 0");
         putSql("updateTableReloadStatusDataLoadedNoParams", "update $(table_reload_status) "
                 + " set completed = case when ("
                 + "    (data_batch_count > -1 and data_batch_count <= (case when $(batchId) between start_data_batch_id and end_data_batch_id then data_batch_loaded + $(batchCount) else data_batch_loaded end)) and "
@@ -171,30 +172,31 @@ public class DataServiceSqlMap extends AbstractSqlMap {
                 + " data_batch_loaded = case when $(batchId) between start_data_batch_id and end_data_batch_id then data_batch_loaded + $(batchCount) else data_batch_loaded end, "
                 + " setup_batch_loaded = case when $(batchId) < start_data_batch_id then setup_batch_loaded + $(batchCount) else setup_batch_loaded end, "
                 + " finalize_batch_loaded = case when $(batchId) > end_data_batch_id then finalize_batch_loaded + $(batchCount) else finalize_batch_loaded end, "
-                + " rows_loaded = (select case when sum(loaded_rows) is null then 0 else sum(loaded_rows) end from $(extract_request) where load_id = $(loadId) and source_node_id = '$(nodeId)'), "
+                // The parentheses around the rows_loaded column name prevent a syntax error for Progress OpenEdge databases
+                + " (rows_loaded) = (select case when sum(loaded_rows) is null then 0 else sum(loaded_rows) end from $(extract_request) where load_id = $(loadId) and source_node_id = '$(nodeId)'), "
                 + " last_update_time = current_timestamp, "
                 + " batch_bulk_load_count = case when $(batchId) between start_data_batch_id and end_data_batch_id then batch_bulk_load_count + $(isBulkLoaded) else batch_bulk_load_count end, "
                 + " error_flag = case when error_batch_id = $(batchId) then 0 else error_flag end, "
                 + " error_batch_id = case when error_batch_id = $(batchId) then null else error_batch_id end "
-                + " where load_id = $(loadId) and completed = 0");
+                + " where load_id = $(loadId) and source_node_id = '$(nodeId)' and completed = 0");
         putSql("updateTableReloadStatusFailed", "update $(table_reload_status) "
                 + " set error_flag = case when error_batch_id is null or error_batch_id != ? then 1 else error_flag end, "
                 + " error_batch_id = case when error_batch_id is null or error_batch_id != ? then ? else error_batch_id end "
-                + " where load_id = ? and completed = 0");
+                + " where load_id = ? and source_node_id = ? and completed = 0");
         putSql("updateTableReloadStatusFailedNoParams", "update $(table_reload_status) "
                 + " set error_flag = case when error_batch_id is null or error_batch_id != $(batchId) then 1 else error_flag end, "
                 + " error_batch_id = case when error_batch_id is null or error_batch_id != $(batchId) then $(batchId) else error_batch_id end "
-                + " where load_id = $(loadId) and completed = 0");
+                + " where load_id = $(loadId) and source_node_id = '$(nodeId)' and completed = 0");
         putSql("selectStartBatchExtractRequest",
                 "select start_batch_id from $(extract_request) where ? between start_batch_id and end_batch_id and node_id = ? and source_node_id = ?");
         putSql("updateTableReloadStatusFinalizeCount", "update $(table_reload_status) set "
                 + " finalize_batch_count = ?, last_update_time = ? "
-                + " where load_id = ?");
+                + " where load_id = ? and source_node_id = ?");
         putSql("updateTableReloadStatusCancelled", "update $(table_reload_status) set "
                 + " cancelled = 1, completed = 1, end_time = ?, last_update_time = ? "
-                + " where load_id = ? and cancelled = 0 and completed = 0");
+                + " where load_id = ? and source_node_id = ?");
         putSql("updateTableReloadStatusError", "update $(table_reload_status) set "
-                + " error_flag = 1, sql_code = ?, sql_state = ?, sql_message = ? where load_id = ?");
+                + " error_flag = 1, sql_code = ?, sql_state = ?, sql_message = ? where load_id = ? and source_node_id = ?");
         // Note that the order by data_id is done appended in code
         putSql("selectEventDataToExtractSql",
                 ""
@@ -218,6 +220,7 @@ public class DataServiceSqlMap extends AbstractSqlMap {
                         "create_time, trigger_hist_id, channel_id, transaction_id, source_node_id, external_data, node_list, '' as router_id, is_prerouted " +
                         "from $(data) ");
         putSql("whereDataId", "where data_id = ?");
+        putSql("whereDataIdBetween", "where data_id between ? and ? order by data_id");
         putSql("whereNewerData", "where table_name = ? and ((event_type = 'I' and row_data like ?) or " +
                 "(event_type in ('U', 'D') and pk_data like ?)) and create_time >= ? order by create_time desc");
         putSql("selectMaxDataEventDataIdSql", ""
@@ -238,14 +241,15 @@ public class DataServiceSqlMap extends AbstractSqlMap {
                 + "select create_time from $(data) where data_id=?   ");
         putSql("findMinDataSql", ""
                 + "select min(data_id) from $(data) where data_id >= ?");
-        putSql("countDataGapsSql", "select count(*) from $(data_gap)");
+        putSql("countDataGapsSql", "select count(*) from $(data_gap) where is_expired = 0");
         putSql("findDataGapsSql",
-                "select start_id, end_id, create_time from $(data_gap) order by start_id asc");
+                "select start_id, end_id, create_time from $(data_gap) where is_expired = ? order by start_id asc");
         putSql("insertDataGapSql",
-                "insert into $(data_gap) (last_update_hostname, start_id, end_id, create_time) values(?, ?, ?, ?)");
+                "insert into $(data_gap) (last_update_hostname, start_id, end_id, is_expired, create_time) values(?, ?, ?, ?, ?)");
         putSql("deleteDataGapSql",
                 "delete from $(data_gap) where start_id=? and end_id=?   ");
-        putSql("deleteAllDataGapsSql", "delete from $(data_gap)");
+        putSql("deleteAllDataGapsSql", "delete from $(data_gap) where is_expired = 0");
+        putSql("expireDataGapSql", "update $(data_gap) set is_expired = 1 where start_id = ? and end_id = ?");
         putSql("selectMaxDataIdSql", "select max(data_id) from $(data)   ");
         putSql("selectMinDataIdSql", "select min(data_id) from $(data)   ");
         putSql("deleteCapturedConfigChannelDataSql", "delete from $(data) where channel_id='config'");

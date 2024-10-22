@@ -22,9 +22,8 @@ package org.jumpmind.symmetric.service.impl;
 
 import java.util.ArrayList;
 import java.util.Date;
-import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 
 import org.jumpmind.db.sql.ISqlTransaction;
 import org.jumpmind.db.sql.mapper.NumberMapper;
@@ -138,9 +137,15 @@ public class AcknowledgeService extends AbstractService implements IAcknowledgeS
                     if (isNewError && outgoingBatch.getSqlCode() == ErrorConstants.FK_VIOLATION_CODE) {
                         if (!outgoingBatch.isLoadFlag() && outgoingBatch.getReloadRowCount() == 0 &&
                                 parameterService.is(ParameterConstants.AUTO_RESOLVE_FOREIGN_KEY_VIOLATION)) {
-                            engine.getDataService().reloadMissingForeignKeyRows(outgoingBatch.getBatchId(), outgoingBatch.getNodeId(),
-                                    outgoingBatch.getFailedDataId(), outgoingBatch.getFailedLineNumber());
-                            suppressError = true;
+                            try {
+                                engine.getDataService().reloadMissingForeignKeyRows(outgoingBatch.getBatchId(), outgoingBatch.getNodeId(),
+                                        outgoingBatch.getFailedDataId(), outgoingBatch.getFailedLineNumber());
+                            } catch (Exception e) {
+                                log.error("Failed to request a reload of missing foreign key rows for batch " + outgoingBatch.getNodeBatchId() +
+                                        " data ID " + outgoingBatch.getFailedDataId(), e);
+                                outgoingBatch.setFailedLineNumber(0);
+                                outgoingBatch.setFailedDataId(0);
+                            }
                         }
                         if (outgoingBatch.isLoadFlag() && parameterService.is(ParameterConstants.AUTO_RESOLVE_FOREIGN_KEY_VIOLATION_REVERSE_RELOAD)) {
                             suppressError = true;
@@ -170,7 +175,8 @@ public class AcknowledgeService extends AbstractService implements IAcknowledgeS
                         outgoingBatch.setErrorFlag(false);
                     } else {
                         log.error("The outgoing batch {} failed: {}{}", outgoingBatch.getNodeBatchId(),
-                                (batch.getSqlCode() != 0 ? "[" + batch.getSqlState() + "," + batch.getSqlCode() + "] " : ""), batch.getSqlMessage());
+                                (batch.getSqlCode() != 0 ? "[" + batch.getSqlState() + "," + batch.getSqlCode() + "] " : ""),
+                                (batch.getSqlMessage() != null ? batch.getSqlMessage() : "(no message)"));
                         RouterStats routerStats = engine.getStatisticManager().getRouterStatsByBatch(batch.getBatchId());
                         if (routerStats != null) {
                             log.info("Router stats for batch " + outgoingBatch.getBatchId() + ": " + routerStats);
@@ -183,10 +189,16 @@ public class AcknowledgeService extends AbstractService implements IAcknowledgeS
                 try {
                     transaction = sqlTemplate.startSqlTransaction();
                     outgoingBatchService.updateOutgoingBatch(transaction, outgoingBatch);
-                    if (status == Status.OK && isFirstTimeAsOkStatus && outgoingBatch.getLoadId() > 0) {
-                        engine.getDataExtractorService().updateExtractRequestLoadTime(transaction, new Date(), outgoingBatch);
+                    if (status == Status.OK && outgoingBatch.getLoadId() > 0) {
+                        if (isFirstTimeAsOkStatus) {
+                            engine.getDataExtractorService().updateExtractRequestLoadTime(transaction, new Date(), outgoingBatch);
+                        } else {
+                            log.info("Ignoring duplicate load status update for load ID {} with batch {}", outgoingBatch.getLoadId(),
+                                    outgoingBatch.getNodeBatchId());
+                        }
                     } else if (status == Status.ER && isFirstTimeAsErStatus && outgoingBatch.getLoadId() > 0) {
-                        engine.getDataService().updateTableReloadStatusFailed(transaction, outgoingBatch.getLoadId(), outgoingBatch.getBatchId());
+                        engine.getDataService().updateTableReloadStatusFailed(transaction, outgoingBatch.getLoadId(),
+                                engine.getNodeId(), outgoingBatch.getBatchId());
                     }
                     transaction.commit();
                     if (status == Status.OK) {
@@ -266,37 +278,32 @@ public class AcknowledgeService extends AbstractService implements IAcknowledgeS
         }
         if (hasCorruptBatch && parameterService.is(ParameterConstants.STREAM_TO_FILE_ENABLED)) {
             OutgoingBatches batches = engine.getOutgoingBatchService().getOutgoingBatches(nodeId, queue, false);
+            Iterator<OutgoingBatch> iter = batches.getBatches().iterator();
+            while (iter.hasNext()) {
+                OutgoingBatch batch = iter.next();
+                if (batch.getStatus() == Status.RQ || batch.getStatus() == Status.NE) {
+                    iter.remove();
+                }
+            }
             if (batches.containsBatches()) {
-                Map<Long, OutgoingBatch> batchMap = new HashMap<Long, OutgoingBatch>();
-                for (OutgoingBatch batch : batches.getBatches()) {
-                    if (batch.getStatus() == Status.LD) {
-                        batchMap.put(batch.getBatchId(), batch);
+                OutgoingBatch batch = batches.getBatches().get(0);
+                StringBuilder message = new StringBuilder(128);
+                message.append("Expected but did not receive an ack for batch ");
+                message.append(batch.getNodeBatchId()).append(". ");
+                if (!batch.isLoadFlag()) {
+                    message.append("This could be because the batch is corrupt - removing the batch from staging.");
+                    log.warn(message.toString());
+                    IStagedResource resource = engine.getStagingManager().find(Constants.STAGING_CATEGORY_OUTGOING,
+                            batch.getStagedLocation(), batch.getBatchId());
+                    if (resource != null) {
+                        resource.delete();
+                    } else {
+                        log.warn("Unable to find outgoing staging file for {} that has corrupt batch data", batch.getNodeBatchId());
                     }
-                }
-                for (BatchAck ack : acks) {
-                    batchMap.remove(ack.getBatchId());
-                }
-                if (batchMap.size() > 0) {
-                    for (OutgoingBatch batch : batchMap.values()) {
-                        StringBuilder message = new StringBuilder(128);
-                        message.append("Expected but did not receive an ack for batch ");
-                        message.append(batch.getNodeBatchId()).append(". ");
-                        if (!batch.isLoadFlag()) {
-                            message.append("This could be because the batch is corrupt - removing the batch from staging.");
-                            log.warn(message.toString());
-                            IStagedResource resource = engine.getStagingManager().find(Constants.STAGING_CATEGORY_OUTGOING,
-                                    batch.getStagedLocation(), batch.getBatchId());
-                            if (resource != null) {
-                                resource.delete();
-                            } else {
-                                log.warn("Unable to find outgoing staging file for node {} that has corrupt batch data", nodeId);
-                            }
-                        } else {
-                            message.append(
-                                    "This could be because the batch is corrupt. Not removing the batch because it was a load batch, but you may need to clear the batch from staging manually.");
-                            log.warn(message.toString());
-                        }
-                    }
+                } else {
+                    message.append(
+                            "This could be because the batch is corrupt. Not removing the batch because it was a load batch, but you may need to clear the batch from staging manually.");
+                    log.warn(message.toString());
                 }
             } else {
                 log.warn("Unable to find outgoing batch for node {} that has corrupt batch data", nodeId);

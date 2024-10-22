@@ -24,7 +24,9 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -35,6 +37,7 @@ import org.apache.commons.lang3.time.DurationFormatUtils;
 import org.jumpmind.db.model.Column;
 import org.jumpmind.db.model.Table;
 import org.jumpmind.db.platform.DatabaseInfo;
+import org.jumpmind.db.platform.DatabaseNamesConstants;
 import org.jumpmind.db.platform.IDatabasePlatform;
 import org.jumpmind.db.sql.DmlStatement;
 import org.jumpmind.db.sql.DmlStatement.DmlType;
@@ -43,7 +46,9 @@ import org.jumpmind.db.sql.ISqlRowMapper;
 import org.jumpmind.db.sql.Row;
 import org.jumpmind.symmetric.ISymmetricEngine;
 import org.jumpmind.symmetric.SymmetricException;
+import org.jumpmind.symmetric.common.ParameterConstants;
 import org.jumpmind.symmetric.common.TableConstants;
+import org.jumpmind.symmetric.db.ISymmetricDialect;
 import org.jumpmind.symmetric.io.DbCompareReport.TableReport;
 import org.jumpmind.symmetric.model.TriggerHistory;
 import org.jumpmind.symmetric.model.TriggerRouter;
@@ -137,7 +142,24 @@ public class DbCompare {
     protected TableReport compareTables(DbCompareTables tables, OutputStream sqlDiffOutput) {
         String sourceSelect = getSourceComparisonSQL(tables, sourceEngine.getTargetDialect().getTargetPlatform());
         String targetSelect = getTargetComparisonSQL(tables, targetEngine.getTargetDialect().getTargetPlatform());
-        // String targetSelect = getTargetComparisonSQL(tables, targetEngine.getDatabasePlatform());
+        ISymmetricDialect sourceDialect = sourceEngine.getSymmetricDialect();
+        ISymmetricDialect targetDialect = targetEngine.getSymmetricDialect();
+        boolean isUsingUnitypes = targetDialect.getParameterService().is(ParameterConstants.DBDIALECT_SYBASE_ASE_CONVERT_UNITYPES_FOR_SYNC) ||
+                sourceDialect.getParameterService().is(ParameterConstants.DBDIALECT_SYBASE_ASE_CONVERT_UNITYPES_FOR_SYNC);
+        boolean sourceTableContainUnitypes = false;
+        boolean targetTableContainUnitypes = false;
+        List<Column> sourceColumns = tables.getSourceTable().getColumnsAsList();
+        for (Column column : sourceColumns) {
+            if (isUniType(column.getJdbcTypeName())) {
+                sourceTableContainUnitypes = true;
+            }
+        }
+        List<Column> targetColumns = tables.getTargetTable().getColumnsAsList();
+        for (Column column : targetColumns) {
+            if (isUniType(column.getJdbcTypeName())) {
+                targetTableContainUnitypes = true;
+            }
+        }
         CountingSqlReadCursor sourceCursor = new CountingSqlReadCursor(sourceEngine.getTargetDialect().getTargetPlatform().getSqlTemplateDirty().queryForCursor(
                 sourceSelect,
                 defaultRowMapper));
@@ -147,8 +169,11 @@ public class DbCompare {
         TableReport tableReport = new TableReport();
         tableReport.setSourceTable(tables.getSourceTable().getName());
         tableReport.setTargetTable(tables.getTargetTable().getName());
+        long time = System.currentTimeMillis();
         Row sourceRow = sourceCursor.next();
         Row targetRow = targetCursor.next();
+        time = System.currentTimeMillis() - time;
+        log.debug("Took " + time + " milliseconds to get the starting source and target rows.");
         int counter = 0;
         long startTime = System.currentTimeMillis();
         DbCompareDiffWriter diffWriter = null;
@@ -165,6 +190,33 @@ public class DbCompare {
                 if (sourceRow == null && targetRow == null) {
                     break;
                 }
+                if (isUsingUnitypes && (sourceTableContainUnitypes || targetTableContainUnitypes)) {
+                    long keyCheck = System.currentTimeMillis();
+                    Map<String, Object> recordToAdd = new HashMap<String, Object>();
+                    Map<String, Object> recordToDelete = new HashMap<String, Object>();
+                    // need to find a way to determine which row, source or target, has the uni key
+                    if (targetTableContainUnitypes) {
+                        for (String key : targetRow.keySet()) {
+                            if (key.startsWith("_uni_")) {
+                                recordToAdd.put(key.substring(5), targetRow.get(key));
+                                recordToDelete.put(key, targetRow.get(key));
+                            }
+                        }
+                        modifyRowForUnitypes(targetRow, recordToAdd, true);
+                        modifyRowForUnitypes(targetRow, recordToDelete, false);
+                    } else if (sourceTableContainUnitypes) {
+                        for (String key : sourceRow.keySet()) {
+                            if (key.startsWith("_uni_")) {
+                                recordToAdd.put(key.substring(5), sourceRow.get(key));
+                                recordToDelete.put(key, sourceRow.get(key));
+                            }
+                        }
+                        modifyRowForUnitypes(sourceRow, recordToAdd, true);
+                        modifyRowForUnitypes(sourceRow, recordToDelete, false);
+                    }
+                    keyCheck = System.currentTimeMillis() - keyCheck;
+                    log.debug("Took " + keyCheck + " milliseconds to check for unitype keys and adjust.");
+                }
                 counter++;
                 if ((counter % 50000) == 0) {
                     long elapsed = System.currentTimeMillis() - startTime;
@@ -179,13 +231,61 @@ public class DbCompare {
                         : null;
                 diffWriter.setError(false);
                 diffWriter.setThrowable(null);
+                DbCompareRow targetCompareRowCopy = null;
+                DbCompareRow sourceCompareRowCopy = null;
+                if (isUsingUnitypes) {
+                    targetCompareRowCopy = targetRow != null ? new DbCompareRow(targetEngine, dbValueComparator, tables.getTargetTable().copy(), (Row) targetRow
+                            .clone())
+                            : null;
+                    sourceCompareRowCopy = sourceRow != null ? new DbCompareRow(sourceEngine, dbValueComparator, tables.getSourceTable().copy(), (Row) sourceRow
+                            .clone())
+                            : null;
+                }
+                long ts1 = System.currentTimeMillis();
                 int comparePk = comparePk(tables, sourceCompareRow, targetCompareRow);
+                ts1 = System.currentTimeMillis() - ts1;
+                if (ts1 > 2) {
+                    log.debug("Took " + ts1 + " milliseconds to run comparePKs.");
+                }
                 if (comparePk == 0) {
+                    long ts = System.currentTimeMillis();
                     Map<Column, String> deltas = sourceCompareRow.compareTo(tables, targetCompareRow);
+                    ts = System.currentTimeMillis() - ts;
+                    if (ts > 2) {
+                        log.debug("Took " + ts + " milliseconds to run compareTo.");
+                    }
+                    Map<Column, String> deltasCopy = new LinkedHashMap<Column, String>();
+                    if (isUsingUnitypes) {
+                        for (Column column : deltas.keySet()) {
+                            deltasCopy.put((Column) column.clone(), deltas.get(column));
+                        }
+                    }
+                    if (targetCompareRowCopy != null || sourceCompareRowCopy != null) {
+                        for (String pkColumnName : targetCompareRowCopy.getTable().getPrimaryKeyColumnNames()) {
+                            if (isUniType(targetCompareRowCopy.getTable().getColumnWithName(pkColumnName).getJdbcTypeName())) {
+                                targetCompareRowCopy.getTable().getColumnWithName(pkColumnName).setMappedType("VARCHAR");
+                            }
+                        }
+                        for (String pkColumnName : sourceCompareRowCopy.getTable().getPrimaryKeyColumnNames()) {
+                            if (isUniType(sourceCompareRowCopy.getTable().getColumnWithName(pkColumnName).getJdbcTypeName())) {
+                                sourceCompareRowCopy.getTable().getColumnWithName(pkColumnName).setMappedType("VARCHAR");
+                            }
+                        }
+                    }
                     if (deltas.isEmpty()) {
                         tableReport.countMatchedRow();
                     } else {
-                        diffWriter.writeUpdate(targetCompareRow, deltas);
+                        if (isUsingUnitypes) {
+                            long ts2 = System.currentTimeMillis();
+                            diffWriter.writeUpdate(targetCompareRowCopy, deltasCopy);
+                            ts2 = System.currentTimeMillis() - ts2;
+                            log.debug("Took " + ts2 + " milliseconds to run writeUpdate for Unitypes.");
+                        } else {
+                            long ts3 = System.currentTimeMillis();
+                            diffWriter.writeUpdate(targetCompareRow, deltas);
+                            ts3 = System.currentTimeMillis() - ts3;
+                            log.debug("Took " + ts3 + " milliseconds to run writeUpdate.");
+                        }
                         if (!diffWriter.isError()) {
                             tableReport.countDifferentRow();
                         } else {
@@ -193,10 +293,25 @@ public class DbCompare {
                             diffWriter.setThrowable(tableReport.getThrowable());
                         }
                     }
+                    long nextRow = System.currentTimeMillis();
                     sourceRow = sourceCursor.next();
                     targetRow = targetCursor.next();
+                    nextRow = System.currentTimeMillis() - nextRow;
+                    if (nextRow > 2) {
+                        log.debug("Took " + nextRow + " milliseconds to get the next source and target rows.");
+                    }
                 } else if (comparePk < 0) {
-                    diffWriter.writeInsert(sourceCompareRow);
+                    if (isUsingUnitypes) {
+                        long ts4 = System.currentTimeMillis();
+                        diffWriter.writeInsert(sourceCompareRowCopy);
+                        ts4 = System.currentTimeMillis() - ts4;
+                        log.debug("Took " + ts4 + " milliseconds to run writeInsert with Unitypes.");
+                    } else {
+                        long ts5 = System.currentTimeMillis();
+                        diffWriter.writeInsert(sourceCompareRow);
+                        ts5 = System.currentTimeMillis() - ts5;
+                        log.debug("Took " + ts5 + " milliseconds to run writeInsert.");
+                    }
                     if (!diffWriter.isError()) {
                         tableReport.countMissingRow();
                     } else {
@@ -205,7 +320,17 @@ public class DbCompare {
                     }
                     sourceRow = sourceCursor.next();
                 } else {
-                    diffWriter.writeDelete(targetCompareRow);
+                    if (isUsingUnitypes) {
+                        long ts6 = System.currentTimeMillis();
+                        diffWriter.writeDelete(targetCompareRowCopy);
+                        ts6 = System.currentTimeMillis() - ts6;
+                        log.debug("Took " + ts6 + " milliseconds to run writeDelete with Unitypes.");
+                    } else {
+                        long ts7 = System.currentTimeMillis();
+                        diffWriter.writeDelete(targetCompareRow);
+                        ts7 = System.currentTimeMillis() - ts7;
+                        log.debug("Took " + ts7 + " milliseconds to run writeDelete.");
+                    }
                     if (!diffWriter.isError()) {
                         tableReport.countExtraRow();
                     } else {
@@ -214,9 +339,16 @@ public class DbCompare {
                     }
                     targetRow = targetCursor.next();
                 }
+                long tableReportTime = System.currentTimeMillis();
                 tableReport.setSourceRows(sourceCursor.count);
                 tableReport.setTargetRows(targetCursor.count);
+                tableReportTime = System.currentTimeMillis() - tableReportTime;
+                if (tableReportTime > 2) {
+                    log.debug("Took " + tableReportTime + " milliseconds to update the table report.");
+                }
             }
+        } catch (CloneNotSupportedException e) {
+            e.printStackTrace();
         } finally {
             if (stream != null) {
                 try {
@@ -232,6 +364,16 @@ public class DbCompare {
             }
         }
         return tableReport;
+    }
+
+    protected void modifyRowForUnitypes(Row originalRow, Map<String, Object> records, Boolean isInserting) {
+        for (String key : records.keySet()) {
+            if (isInserting) {
+                originalRow.put(key, records.get(key));
+            } else {
+                originalRow.remove(key);
+            }
+        }
     }
 
     protected int comparePk(DbCompareTables tables, DbCompareRow sourceCompareRow, DbCompareRow targetCompareRow) {
@@ -250,7 +392,7 @@ public class DbCompare {
     protected String getSourceComparisonSQL(DbCompareTables tables, IDatabasePlatform platform) {
         String whereClause = config.getSourceWhereClause(tables.getSourceTable().getName());
         String sql = getComparisonSQL(tables.getSourceTable(),
-                tables.getSourceTable().getPrimaryKeyColumns(), platform, whereClause);
+                tables.getSourceTable().getPrimaryKeyColumns(), platform, whereClause, true);
         log.info("Source comparison SQL: {}", sql);
         return sql;
     }
@@ -266,31 +408,75 @@ public class DbCompare {
             }
         }
         String whereClause = config.getTargetWhereClause(tables.getTargetTable().getName());
-        String sql = getComparisonSQL(tables.getTargetTable(), tables.getTargetTable().getPrimaryKeyColumns(), platform, whereClause);
+        String sql = getComparisonSQL(tables.getTargetTable(), tables.getTargetTable().getPrimaryKeyColumns(), platform,
+                whereClause, false);
         log.info("Target comparison SQL: {}", sql);
         return sql;
     }
 
-    protected String getComparisonSQL(Table table, Column[] sortByColumns, IDatabasePlatform platform, String whereClause) {
-        DmlStatement statement = platform.createDmlStatement(DmlType.SELECT,
-                table.getCatalog(), table.getSchema(), table.getName(),
-                null, table.getColumns(),
-                null, null);
+    protected String getComparisonSQL(Table table, Column[] sortByColumns, IDatabasePlatform platform,
+            String whereClause, boolean isSource) {
+        DmlStatement statement = platform.createDmlStatement(DmlType.SELECT, table.getCatalog(), table.getSchema(),
+                table.getName(), null, table.getColumns(), null, null);
         StringBuilder sql = new StringBuilder(statement.getSql());
-        sql.setLength(sql.length() - "where ".length()); // remove the trailing where so we can insert a table alias.
-        sql.append(" t where "); // main table alias.
-        sql.append(whereClause).append(" ");
-        sql.append(buildOrderBy(table, sortByColumns, platform));
-        return sql.toString();
+        String sybaseUnitypeConversions = statement.getSql();
+        boolean isUsingUnitypes = false;
+        if (platform.getName().equals(DatabaseNamesConstants.ASE)) {
+            if (isSource) {
+                ISymmetricDialect symmetricDialect = sourceEngine.getSymmetricDialect();
+                isUsingUnitypes = symmetricDialect.getParameterService()
+                        .is(ParameterConstants.DBDIALECT_SYBASE_ASE_CONVERT_UNITYPES_FOR_SYNC);
+            } else {
+                ISymmetricDialect symmetricDialect = targetEngine.getSymmetricDialect();
+                isUsingUnitypes = symmetricDialect.getParameterService()
+                        .is(ParameterConstants.DBDIALECT_SYBASE_ASE_CONVERT_UNITYPES_FOR_SYNC);
+            }
+            if (isUsingUnitypes) {
+                for (Column column : statement.getColumns()) {
+                    if (isUniType(column.getJdbcTypeName()) && !column.getJdbcTypeName().equalsIgnoreCase("unitext")) {
+                        if (sybaseUnitypeConversions.contains(" " + column.getName() + ",")) {
+                            sybaseUnitypeConversions = sybaseUnitypeConversions.replace(" " + column.getName() + ",", "case when " + column.getName()
+                                    + " is null then null else '\"' +\n"
+                                    + " bintostr(convert(varbinary(16384)," + column.getName() + ")) + '\"' end as _uni_" + column.getName() + " ,");
+                        } else {
+                            sybaseUnitypeConversions = sybaseUnitypeConversions.replace(" " + column.getName() + " from", "case when " + column.getName()
+                                    + " is null then null else '\"' +\n"
+                                    + " bintostr(convert(varbinary(16384)," + column.getName() + ")) + '\"' end as _uni_" + column.getName() + " from");
+                        }
+                    }
+                }
+            }
+        }
+        StringBuilder finalSql = null;
+        if (isUsingUnitypes) {
+            finalSql = new StringBuilder(sybaseUnitypeConversions.toString());
+        } else {
+            finalSql = new StringBuilder(sql.toString());
+        }
+        finalSql.setLength(finalSql.length() - "where ".length()); // remove the trailing where so we can insert a table alias.
+        finalSql.append(" t where "); // main table alias.
+        finalSql.append(whereClause).append(" ");
+        finalSql.append(buildOrderBy(table, sortByColumns, platform, isSource));
+        return finalSql.toString();
     }
 
-    protected String buildOrderBy(Table table, Column[] sortByColumns, IDatabasePlatform platform) {
+    protected String buildOrderBy(Table table, Column[] sortByColumns, IDatabasePlatform platform, boolean isSource) {
         DatabaseInfo databaseInfo = platform.getDatabaseInfo();
         String quote = databaseInfo.getDelimiterToken() == null ? "" : databaseInfo.getDelimiterToken();
         StringBuilder orderByClause = new StringBuilder("ORDER BY ");
         for (Column sortByColumn : sortByColumns) {
-            String columnName = new StringBuilder(quote).append(sortByColumn.getName()).append(quote).toString();
-            orderByClause.append(columnName);
+            String columnName = sortByColumn.getName();
+            String quotedColumnName = new StringBuilder(quote).append(columnName).append(quote).toString();
+            orderByClause.append(quotedColumnName);
+            String suffix;
+            if (isSource) {
+                suffix = config.getSourceOrderBySuffix(table.getName(), columnName);
+            } else {
+                suffix = config.getTargetOrderBySuffix(table.getName(), columnName);
+            }
+            if (StringUtils.isNotBlank(suffix)) {
+                orderByClause.append(" ").append(suffix);
+            }
             orderByClause.append(",");
         }
         orderByClause.setLength(orderByClause.length() - 1);
@@ -385,7 +571,9 @@ public class DbCompare {
                     log.warn("No trigger history found for {}", sourceTable.getFullyQualifiedTableName());
                 }
             }
-            DbCompareTables tables = new DbCompareTables(sourceTable, null);
+            // could put a check here before copying table?
+            Table sourceTableCopy = sourceTable.copy();
+            DbCompareTables tables = new DbCompareTables(sourceTableCopy, null);
             String targetTableName = tableName;
             if (!CollectionUtils.isEmpty(targetTableNames)) {
                 targetTableName = targetTableNames.get(i);
@@ -476,8 +664,13 @@ public class DbCompare {
                 }
             }
         }
-        tables.setTargetTable(targetTable);
-        return targetTable;
+        // could put a check here before copying table
+        long targetTableCopyTime = System.currentTimeMillis();
+        Table targetTableCopy = targetTable.copy();
+        targetTableCopyTime = System.currentTimeMillis() - targetTableCopyTime;
+        log.debug("Took " + targetTableCopyTime + " milliseconds to copy target table.");
+        tables.setTargetTable(targetTableCopy);
+        return targetTableCopy;
     }
 
     protected TriggerRouter getTriggerRouterFor(Table sourceTable) {
@@ -564,6 +757,10 @@ public class DbCompare {
             Map<String, String> targetTableNameParts = targetEngine.getTargetDialect().getTargetPlatform().parseQualifiedTableName(targetTableName);
             return StringUtils.equalsIgnoreCase(sourceTableNameParts.get("table"), targetTableNameParts.get("table"));
         }
+    }
+
+    public boolean isUniType(String type) {
+        return type.equalsIgnoreCase("UNITEXT") || type.equalsIgnoreCase("UNICHAR") || type.equalsIgnoreCase("UNIVARCHAR");
     }
 
     static class CountingSqlReadCursor implements ISqlReadCursor<Row>, Closeable {

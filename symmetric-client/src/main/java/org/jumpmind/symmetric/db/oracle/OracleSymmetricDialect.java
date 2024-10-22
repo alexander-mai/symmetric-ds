@@ -24,6 +24,7 @@ import static org.apache.commons.lang3.StringUtils.isBlank;
 
 import java.text.ParseException;
 import java.util.Date;
+import java.util.List;
 import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
@@ -36,6 +37,7 @@ import org.jumpmind.db.platform.IDatabasePlatform;
 import org.jumpmind.db.platform.PermissionType;
 import org.jumpmind.db.sql.ISqlTransaction;
 import org.jumpmind.db.sql.SqlException;
+import org.jumpmind.db.sql.mapper.StringMapper;
 import org.jumpmind.db.util.BinaryEncoding;
 import org.jumpmind.symmetric.common.ParameterConstants;
 import org.jumpmind.symmetric.common.TableConstants;
@@ -99,7 +101,7 @@ public class OracleSymmetricDialect extends AbstractSymmetricDialect implements 
     }
 
     @Override
-    protected boolean doesTriggerExistOnPlatform(String catalog, String schema, String tableName,
+    protected boolean doesTriggerExistOnPlatform(StringBuilder sqlBuffer, String catalog, String schema, String tableName,
             String triggerName) {
         if (isBlank(schema)) {
             schema = platform.getDefaultSchema();
@@ -154,7 +156,7 @@ public class OracleSymmetricDialect extends AbstractSymmetricDialect implements 
     public void removeDdlTrigger(StringBuilder sqlBuffer, String catalogName, String schemaName, String triggerName) {
         String sql = "drop trigger " + triggerName;
         logSql(sql, sqlBuffer);
-        if (parameterService.is(ParameterConstants.AUTO_SYNC_TRIGGERS)) {
+        if (parameterService.is(ParameterConstants.AUTO_SYNC_TRIGGERS) && sqlBuffer == null) {
             try {
                 log.info("Removing DDL trigger " + triggerName);
                 platform.getSqlTemplate().update(sql);
@@ -165,7 +167,7 @@ public class OracleSymmetricDialect extends AbstractSymmetricDialect implements 
     }
 
     @Override
-    public void createRequiredDatabaseObjects() {
+    public void createRequiredDatabaseObjectsImpl(StringBuilder ddl) {
         String blobToClob = this.parameterService.getTablePrefix() + "_" + "blob2clob";
         if (!installed(SQL_OBJECT_INSTALLED, blobToClob)) {
             String sql = "CREATE OR REPLACE FUNCTION $(functionName) (blob_in IN BLOB)                                                                                                                                           "
@@ -190,7 +192,7 @@ public class OracleSymmetricDialect extends AbstractSymmetricDialect implements 
                     + "       END IF;                                                                                                                                                            "
                     + "       RETURN v_clob;                                                                                                                                                     "
                     + "   END $(functionName);                                                                                                                                                   ";
-            install(sql, blobToClob);
+            install(sql, blobToClob, ddl);
         }
         String transactionId = this.parameterService.getTablePrefix() + "_" + "transaction_id";
         if (!installed(SQL_OBJECT_INSTALLED, transactionId)) {
@@ -199,7 +201,7 @@ public class OracleSymmetricDialect extends AbstractSymmetricDialect implements 
                     + "   begin                                                                                                                                                              "
                     + "      return DBMS_TRANSACTION.local_transaction_id(false);                                                                                                            "
                     + "   end;                                                                                                                                                               ";
-            install(sql, transactionId);
+            install(sql, transactionId, ddl);
         }
         String triggerDisabled = this.parameterService.getTablePrefix() + "_" + "trigger_disabled";
         if (!installed(SQL_OBJECT_INSTALLED, triggerDisabled)) {
@@ -208,7 +210,7 @@ public class OracleSymmetricDialect extends AbstractSymmetricDialect implements 
                     + "      return " + getSymmetricPackageName()
                     + ".disable_trigger;                                                                                                                                   "
                     + "   end;                                                                                                                                                                 ";
-            install(sql, triggerDisabled);
+            install(sql, triggerDisabled, ddl);
         }
         String pkgPackage = this.parameterService.getTablePrefix() + "_" + "pkg";
         if (!installed(SQL_OBJECT_INSTALLED, pkgPackage)) {
@@ -219,7 +221,7 @@ public class OracleSymmetricDialect extends AbstractSymmetricDialect implements 
                     + "      procedure setNodeValue (node_id IN varchar);                                                                                                                       "
                     + "  end " + getSymmetricPackageName()
                     + ";                                                                                                                                                           ";
-            install(sql, pkgPackage);
+            install(sql, pkgPackage, ddl);
             sql = "CREATE OR REPLACE package body $(functionName) as                                                                                                                                                              "
                     + "     procedure setValue(a IN number) is                                                                                                                                 "
                     + "     begin                                                                                                                                                              "
@@ -231,7 +233,7 @@ public class OracleSymmetricDialect extends AbstractSymmetricDialect implements 
                     + "     end;                                                                                                                                                               "
                     + " end " + getSymmetricPackageName()
                     + ";                                                                                                                                                           ";
-            install(sql, pkgPackage);
+            install(sql, pkgPackage, ddl);
         }
         String wkt2geom = this.parameterService.getTablePrefix() + "_" + "wkt2geom";
         if (!installed(SQL_OBJECT_INSTALLED, wkt2geom) && this.isSpatialTypesEnabled) {
@@ -249,7 +251,7 @@ public class OracleSymmetricDialect extends AbstractSymmetricDialect implements 
                     + "      END IF;                                      \r\n"
                     + "      RETURN v_out;                                \r\n"
                     + "    END $(functionName);                           \r\n";
-            install(sql, wkt2geom);
+            install(sql, wkt2geom, ddl);
         }
     }
 
@@ -309,6 +311,17 @@ public class OracleSymmetricDialect extends AbstractSymmetricDialect implements 
     }
 
     @Override
+    public String getTransactionId(ISqlTransaction transaction) {
+        if (supportsTransactionId()) {
+            List<String> list = transaction.query("select DBMS_TRANSACTION.local_transaction_id() from dual", new StringMapper(), null, null);
+            if (list != null && list.size() > 0) {
+                return list.get(0);
+            }
+        }
+        return null;
+    }
+
+    @Override
     public boolean supportsTransactionId() {
         return true;
     }
@@ -328,7 +341,7 @@ public class OracleSymmetricDialect extends AbstractSymmetricDialect implements 
 
     @Override
     public long getCurrentSequenceValue(SequenceIdentifier identifier) {
-        long id = platform.getSqlTemplate().queryForLong("select last_number - cache_size from user_sequences where sequence_name = ?",
+        long id = platform.getSqlTemplate().queryForLong("select last_number from user_sequences where sequence_name = ?",
                 getSequenceName(identifier).toUpperCase());
         return id < 0 ? 0 : id;
     }

@@ -22,24 +22,30 @@ package org.jumpmind.symmetric.io;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
 import java.sql.Types;
+import java.text.Normalizer;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.List;
 
+import org.apache.commons.codec.DecoderException;
+import org.apache.commons.codec.binary.Hex;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.commons.lang3.time.DateUtils;
 import org.jumpmind.db.model.Column;
 import org.jumpmind.db.model.TypeMap;
 import org.jumpmind.symmetric.ISymmetricEngine;
+import org.jumpmind.symmetric.common.ParameterConstants;
+import org.jumpmind.symmetric.db.ISymmetricDialect;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class DbValueComparator {
-    final Logger log = LoggerFactory.getLogger(getClass());
+    final static Logger log = LoggerFactory.getLogger(DbValueComparator.class);
     private ISymmetricEngine sourceEngine;
     private ISymmetricEngine targetEngine;
     private boolean stringIgnoreWhiteSpace = true;
@@ -64,6 +70,20 @@ public class DbValueComparator {
             return 0;
         }
         if (sourceColumn.isOfTextType()) {
+            if (isUniType(targetColumn.getJdbcTypeName()) && !targetColumn.getJdbcTypeName().equalsIgnoreCase("unitext")) {
+                long ts = System.currentTimeMillis();
+                targetValue = convertString(targetValue, targetColumn, false);
+                ts = System.currentTimeMillis() - ts;
+                log.debug("Took " + ts + "milliseconds to convert string for comparison.");
+            }
+            return compareText(sourceColumn, targetColumn, sourceValue, targetValue);
+        } else if (isUniType(sourceColumn.getJdbcTypeName())) {
+            if (!sourceColumn.getJdbcTypeName().equalsIgnoreCase("unitext")) {
+                long ts = System.currentTimeMillis();
+                sourceValue = convertString(sourceValue, sourceColumn, false);
+                ts = System.currentTimeMillis() - ts;
+                log.debug("Took " + ts + "milliseconds to convert string for comparison.");
+            }
             return compareText(sourceColumn, targetColumn, sourceValue, targetValue);
         } else if (sourceColumn.isOfNumericType()) {
             return compareNumeric(sourceColumn, targetColumn, sourceValue, targetValue);
@@ -72,6 +92,29 @@ public class DbValueComparator {
         } else {
             return compareDefault(sourceColumn, targetColumn, sourceValue, targetValue);
         }
+    }
+
+    public static String convertString(String string, Column column, boolean isPrimaryKey) {
+        String stringToConvert = string;
+        String utf8String = null;
+        try {
+            if (stringToConvert.contains("\"")) {
+                stringToConvert = stringToConvert.substring(1, stringToConvert.length() - 1);
+            }
+            if (!stringToConvert.toLowerCase().matches(".*[a-z].*") && !isPrimaryKey) {
+                stringToConvert = new String(Hex.decodeHex(stringToConvert));
+                if (stringToConvert.contains("\"")) {
+                    stringToConvert = stringToConvert.substring(1, stringToConvert.length() - 1);
+                }
+            }
+            stringToConvert = "fffe" + stringToConvert;
+            utf8String = new String(Hex.decodeHex(stringToConvert), StandardCharsets.UTF_16);
+        } catch (DecoderException e) {
+            log.warn("Failed to decode the following record " + stringToConvert + " from column " + column.getName() + " of type " + column.getJdbcTypeName()
+                    + " using mapped type of "
+                    + column.getMappedType() + ". Original string was " + string, e);
+        }
+        return utf8String;
     }
 
     public int compareText(Column sourceColumn, Column targetColumn, String source, String target) {
@@ -87,10 +130,22 @@ public class DbValueComparator {
             source = source != null ? source.trim() : null;
             target = target != null ? target.trim() : null;
         }
-        if (source != null && target != null) {
-            return source.compareTo(target);
+        ISymmetricDialect symmetricDialect = sourceEngine.getSymmetricDialect();
+        boolean isUsingUnitypes = symmetricDialect.getParameterService().is(ParameterConstants.DBDIALECT_SYBASE_ASE_CONVERT_UNITYPES_FOR_SYNC);
+        if (isUsingUnitypes && (isUniType(sourceColumn.getJdbcTypeName()) || isUniType(targetColumn.getJdbcTypeName()))) {
+            String normalizedSource = Normalizer.normalize(source, Normalizer.Form.NFD);
+            String normalizedTarget = Normalizer.normalize(target, Normalizer.Form.NFD);
+            if (normalizedSource != null && normalizedTarget != null) {
+                return normalizedSource.compareTo(normalizedTarget);
+            } else {
+                return compareDefault(sourceColumn, targetColumn, normalizedSource, normalizedTarget);
+            }
         } else {
-            return compareDefault(sourceColumn, targetColumn, source, target);
+            if (source != null && target != null) {
+                return source.compareTo(target);
+            } else {
+                return compareDefault(sourceColumn, targetColumn, source, target);
+            }
         }
     }
 
@@ -194,6 +249,10 @@ public class DbValueComparator {
             }
         }
         return date;
+    }
+
+    public boolean isUniType(String type) {
+        return type.equalsIgnoreCase("UNITEXT") || type.equalsIgnoreCase("UNICHAR") || type.equalsIgnoreCase("UNIVARCHAR");
     }
 
     public int getNumericScale() {

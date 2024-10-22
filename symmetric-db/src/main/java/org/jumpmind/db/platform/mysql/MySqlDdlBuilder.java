@@ -48,6 +48,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.jumpmind.db.alter.AddColumnChange;
 import org.jumpmind.db.alter.AddPrimaryKeyChange;
 import org.jumpmind.db.alter.ColumnAutoIncrementChange;
+import org.jumpmind.db.alter.ColumnAutoUpdateChange;
 import org.jumpmind.db.alter.ColumnChange;
 import org.jumpmind.db.alter.CopyColumnValueChange;
 import org.jumpmind.db.alter.PrimaryKeyChange;
@@ -110,6 +111,7 @@ public class MySqlDdlBuilder extends AbstractDdlBuilder {
         databaseInfo.addNativeTypeMapping(Types.REAL, "FLOAT");
         databaseInfo.addNativeTypeMapping(Types.REF, "MEDIUMBLOB", Types.LONGVARBINARY);
         databaseInfo.addNativeTypeMapping(Types.STRUCT, "LONGBLOB", Types.LONGVARBINARY);
+        databaseInfo.addNativeTypeMapping(Types.NCLOB, "LONGTEXT(MAX)");
         // Since TIMESTAMP is not a stable datatype yet, and does not support a
         // higher precision
         // than DATETIME (year to seconds) as of MySQL 5, we map the JDBC type
@@ -122,9 +124,9 @@ public class MySqlDdlBuilder extends AbstractDdlBuilder {
         databaseInfo.addNativeTypeMapping(Types.TINYINT, "SMALLINT", Types.SMALLINT);
         databaseInfo.addNativeTypeMapping("BOOLEAN", "BIT", "BIT");
         databaseInfo.addNativeTypeMapping("DATALINK", "MEDIUMBLOB", "LONGVARBINARY");
-        databaseInfo.addNativeTypeMapping(ColumnTypes.NVARCHAR, "VARCHAR", Types.VARCHAR);
+        databaseInfo.addNativeTypeMapping(ColumnTypes.NVARCHAR, "NVARCHAR", Types.NVARCHAR);
         databaseInfo.addNativeTypeMapping(ColumnTypes.LONGNVARCHAR, "VARCHAR", Types.VARCHAR);
-        databaseInfo.addNativeTypeMapping(ColumnTypes.NCHAR, "CHAR", Types.CHAR);
+        databaseInfo.addNativeTypeMapping(ColumnTypes.NCHAR, "NCHAR", Types.NCHAR);
         databaseInfo.setDefaultSize(Types.CHAR, 254);
         databaseInfo.setDefaultSize(Types.VARCHAR, 254);
         databaseInfo.setDefaultSize(Types.BINARY, 254);
@@ -260,6 +262,13 @@ public class MySqlDdlBuilder extends AbstractDdlBuilder {
     }
 
     @Override
+    protected void writeColumnAutoUpdateStmt(Table table, Column column, StringBuilder ddl) {
+        if (column.getMappedTypeCode() == Types.TIMESTAMP && column.isAutoUpdate()) {
+            ddl.append("on update current_timestamp()");
+        }
+    }
+
+    @Override
     protected boolean shouldUseQuotes(String defaultValue, Column column) {
         String defaultValueStr = mapDefaultValue(defaultValue, column);
         while (defaultValueStr != null && defaultValueStr.startsWith("(") && defaultValueStr.endsWith(")")) {
@@ -304,6 +313,7 @@ public class MySqlDdlBuilder extends AbstractDdlBuilder {
         }
     }
 
+    @Override
     protected boolean isFullTextIndex(IIndex index) {
         for (int idx = 0; idx < index.getColumnCount(); idx++) {
             IndexColumn indexColumn = index.getColumn(idx);
@@ -372,6 +382,16 @@ public class MySqlDdlBuilder extends AbstractDdlBuilder {
                     changedColumns.add(column);
                 }
                 changeIt.remove();
+            } else if (change instanceof ColumnAutoUpdateChange) {
+                try {
+                    Column sourceColumn = ((ColumnAutoUpdateChange) change).getColumn();
+                    Column targetColumn = (Column) sourceColumn.clone();
+                    targetColumn.setAutoUpdate(!sourceColumn.isAutoUpdate());
+                    processColumnChange(sourceTable, targetTable, sourceColumn, targetColumn, ddl);
+                    changeIt.remove();
+                } catch (CloneNotSupportedException e) {
+                    log.error("Failed to clone column", e);
+                }
             }
         }
         for (Iterator<Column> columnIt = changedColumns.iterator(); columnIt.hasNext();) {
@@ -482,7 +502,7 @@ public class MySqlDdlBuilder extends AbstractDdlBuilder {
                 sqlType = tmpSqlType.toString();
             }
         }
-        if ("TINYBLOB".equalsIgnoreCase(column.getJdbcTypeName())) {
+        if ("TINYBLOB".equalsIgnoreCase(column.getJdbcTypeName()) || (pc != null && "TINYBLOB".equalsIgnoreCase(pc.getType()))) {
             // For some reason, MySql driver returns BINARY type for TINYBLOB instead of BLOB type
             sqlType = "TINYBLOB";
         } else if (pc == null && (column.getMappedTypeCode() == Types.CHAR || column.getMappedTypeCode() == Types.NCHAR) && column.getSizeAsInt() > 255) {
@@ -499,6 +519,9 @@ public class MySqlDdlBuilder extends AbstractDdlBuilder {
         if (pc == null) {
             pc = column.getPlatformColumns() == null ? null : column.getPlatformColumns().get(DatabaseNamesConstants.ORACLE122);
         }
+        if (pc == null) {
+            pc = column.getPlatformColumns() == null ? null : column.getPlatformColumns().get(DatabaseNamesConstants.ORACLE23);
+        }
         if (pc != null) {
             if ("NVARCHAR2".equals(pc.getType())) {
                 sqlType = "NVARCHAR(" + pc.getSize() + ")";
@@ -507,6 +530,10 @@ public class MySqlDdlBuilder extends AbstractDdlBuilder {
             } else if ("FLOAT".equals(pc.getType()) && pc.getSize() >= 63) {
                 sqlType = "DOUBLE";
             }
+        }
+        if (sqlType.contains("UNSIGNED")) {
+            sqlType = sqlType.replaceAll(" UNSIGNED", "");
+            sqlType = sqlType + " UNSIGNED";
         }
         return sqlType;
     }

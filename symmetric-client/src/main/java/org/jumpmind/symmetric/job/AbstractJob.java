@@ -20,6 +20,8 @@
  */
 package org.jumpmind.symmetric.job;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Date;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -47,8 +49,8 @@ import org.springframework.scheduling.support.SimpleTriggerContext;
 
 @ManagedResource(description = "The management interface for a job")
 abstract public class AbstractJob implements Runnable, IJob {
-    protected final Logger log = LoggerFactory.getLogger(getClass());
-    private String jobName;
+    protected Logger log = LoggerFactory.getLogger(getClass());
+    protected String jobName;
     private JobDefinition jobDefinition;
     private AtomicBoolean paused = new AtomicBoolean(false);
     private Date lastFinishTime;
@@ -61,10 +63,10 @@ abstract public class AbstractJob implements Runnable, IJob {
     protected ISymmetricEngine engine;
     private ThreadPoolTaskScheduler taskScheduler;
     private ScheduledFuture<?> scheduledJob;
-    private RandomTimeSlot randomTimeSlot;
+    protected RandomTimeSlot randomTimeSlot;
     private CronTrigger cronTrigger;
     private Date periodicFirstRunTime;
-    private IParameterService parameterService;
+    protected IParameterService parameterService;
     private long processedCount;
     private String targetNodeId;
     private int targetNodeCount;
@@ -87,8 +89,8 @@ abstract public class AbstractJob implements Runnable, IJob {
             if (isCronSchedule()) {
                 String cronExpression = getSchedule();
                 cronTrigger = new CronTrigger(cronExpression);
-                log.info("Starting job '{}' on cron schedule '{}' with the first run at {}", jobName, cronExpression, cronTrigger.nextExecutionTime(
-                        new SimpleTriggerContext()));
+                log.info("Starting job '{}' on cron schedule '{}' with the first run at {}", jobName, cronExpression,
+                        Date.from(cronTrigger.nextExecution(new SimpleTriggerContext())));
                 try {
                     this.scheduledJob = taskScheduler.schedule(this, cronTrigger);
                 } catch (Exception ex) {
@@ -119,7 +121,7 @@ abstract public class AbstractJob implements Runnable, IJob {
                 log.info("Starting job '{}' on periodic schedule every {}ms with the first run at {}", new Object[] { jobName,
                         timeBetweenRunsInMs, periodicFirstRunTime });
                 this.scheduledJob = taskScheduler.scheduleWithFixedDelay(this,
-                        periodicFirstRunTime, timeBetweenRunsInMs);
+                        periodicFirstRunTime.toInstant(), Duration.ofMillis(timeBetweenRunsInMs));
                 started = true;
             }
         }
@@ -329,22 +331,23 @@ abstract public class AbstractJob implements Runnable, IJob {
     @Override
     public Date getNextExecutionTime() {
         if (isCronSchedule() && cronTrigger != null) {
-            return cronTrigger.nextExecutionTime(new TriggerContext() {
+            return Date.from(cronTrigger.nextExecution(new TriggerContext() {
                 @Override
-                public Date lastScheduledExecutionTime() {
+                public Instant lastScheduledExecution() {
                     return null;
                 }
 
                 @Override
-                public Date lastCompletionTime() {
-                    return getLastFinishTime();
+                public Instant lastCompletion() {
+                    Date lastFinishTime = getLastFinishTime();
+                    return lastFinishTime != null ? lastFinishTime.toInstant() : null;
                 }
 
                 @Override
-                public Date lastActualExecutionTime() {
+                public Instant lastActualExecution() {
                     return null;
                 }
-            });
+            }));
         } else if (isPeriodicSchedule()) {
             if (getLastFinishTime() != null) {
                 return new Date(getLastFinishTime().getTime() + getTimeBetweenRunsInMs());
@@ -447,5 +450,9 @@ abstract public class AbstractJob implements Runnable, IJob {
 
     public void setParameterService(IParameterService parameterService) {
         this.parameterService = parameterService;
+    }
+
+    public void setThreadPoolTaskScheduler(ThreadPoolTaskScheduler taskScheduler) {
+        this.taskScheduler = taskScheduler;
     }
 }

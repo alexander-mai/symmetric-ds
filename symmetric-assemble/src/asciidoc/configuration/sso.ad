@@ -1,0 +1,124 @@
+
+=== Single Sign-On
+
+Users can utilize single sign-on using LDAP or SAML authentication.
+
+==== LDAP
+
+Configuring a <<Users>> authentication on SymmetricDS using LDAP is as simple as setting up the following four <<Parameters>>.
+
+console.auth.ldap.baseDN::  The LDAP base DN to search for a user or group (e.g. dc=example,dc=com).
+                            [&#xA0;Default:&#xA0;]
+                        
+
+A list of base DNs can be specified by separating each entry by a pipe ("|") symbol. +
+For example: +
+ou=Users,o=IT,c=US,dc=corp,dc=local|ou=Users,o=Tech,c=US,dc=corp,dc=local
+
+console.auth.ldap.host::  The LDAP server host name (e.g. ldap://hostname:389/).
+                            [&#xA0;Default:&#xA0;]
+                            
+console.auth.ldap.searchAttribute::  LDAP attribute to search for (e.g. uid).
+                            [&#xA0;Default:&#xA0;]
+
+console.auth.ldap.securityPrincipal:: Format to use for the LDAP security principal (just ${username} may work for Active Directory).
+                            [&#xA0;Default: ${searchAttribute}=${username},${baseDN}&#xA0;]
+
+It is also possible for LDAP users to log in without having a corresponding console user. This feature relies on the following five <<Parameters>>.
+
+console.auth.ldap.role.group.map::  Map of LDAP groups to console role IDs. Allows LDAP users to log in without having a corresponding console user if they are a member of one of the specified groups.
+                            [&#xA0;Default:&#xA0;]
+
+
+If a user is a member of multiple groups, the group that is specified first will take priority. This parameter does not account for group inheritance, meaning that each individual group must be specified. The entire DN must be specified for each group. The map must use the following format: +
+"group0==roleId0","group1==roleId1","group2==roleId2"
+
+console.auth.ldap.adminDN::  The DN of the user to log in as while determining whether a user belongs to one of the groups specified by the console.auth.ldap.role.group.map parameter. If blank, the credentials from the login screen will be used.
+                            [&#xA0;Default:&#xA0;]
+
+console.auth.ldap.admin.password::  The password for the user specified by the console.auth.ldap.adminDN parameter.
+                            [&#xA0;Default:&#xA0;]
+
+console.auth.ldap.admin.use.memberOf::  Whether or not the LDAP server maintains a "memberOf" attribute. This only has an effect if the console.auth.ldap.role.group.map parameter is set.
+                            [&#xA0;Default: true&#xA0;]
+
+console.auth.ldap.admin.memberAttribute::  The attribute of an LDAP group to check to determine whether or not a user is a member of the group. This only has an effect if the console.auth.ldap.role.group.map parameter is set and the console.auth.ldap.use.memberOf parameter is set to false.
+                            [&#xA0;Default: member&#xA0;]
+
+These parameters can be set within the LDAP tab on the Configure SSO page by filling out the form and clicking *Save*.
+
+image::images/sso/ldap-save.png[]
+
+These parameters can also be set by manually by entering the desired values in Configure->Parameters.
+
+image::images/sso/ldap-parameters.png[]
+                            
+You may test the values that have been input into the form to test the connection to your LDAP directory.  
+To do this, click the *Test* button, enter the user credentials and click *Test* to test the authentication.  If the authentication succeeded, save the form.
+
+image::images/sso/ldap-authentication.png[]
+
+IMPORTANT: You must have values for the LDAP URL, Base DN, and Search Attributes fields or the test will fail.
+
+==== SAML
+
+To configure a <<Users>> authentication on SymmetricDS using SAML, you have to set four <<Parameters>>.
+
+console.auth.saml.sp.nameid.format:: Specifies constraints on the name identifier to be used to represent the requested subject during SAML authentication.
+
+console.auth.saml.idp.entityid:: Identifier of the SAML identity provider entity (must be a URI).
+
+console.auth.saml.idp.sso.service.url:: SSO endpoint info of the SAML identity provider. URL target of the identity provider where the service provider will send the authentication request message.
+
+console.auth.saml.idp.cert:: Path to the public x509 certificate of the SAML identity provider.
+
+It is also possible for SAML users to log in without having a corresponding console user. This feature relies on the following two <<Parameters>>.
+
+console.auth.saml.role.group.map::  Map of SAML groups to console role IDs. Allows SAML users to log in without having a corresponding console user if they are a member of one of the specified groups.
+                            [&#xA0;Default:&#xA0;]
+
+
+If a user is a member of multiple groups, the group that is specified first will take priority. This parameter does not account for group inheritance, meaning that each individual group must be specified. The map must use the following format: +
+"group0==roleId0","group1==roleId1","group2==roleId2"
+
+console.auth.saml.admin.groupAttribute::  The attribute of an SAML response to check to determine whether or not a user is a member of a SAML group. This only has an effect if the console.auth.saml.role.group.map parameter is set.
+                            [&#xA0;Default: group&#xA0;]
+
+These parameters can be set within the SAML tab on the Configure SSO page by filling out the form and clicking *Save*.
+
+image::images/sso/saml-save.png[]
+
+These parameters can also be set by manually by entering the desired values in Configure->Parameters.
+
+image::images/sso/saml-parameters.png[]
+                            
+You may test the values that have been input into the form to test the connection to your SAML identity provider. You must save your changes in the form if you want them to apply when you run the SAML test.
+To do this, make sure that the current node is one that you set the parameters for, and then click the *Test* button. Then click *Test* to test the authentication.
+
+image::images/sso/saml-authentication.png[]
+
+IMPORTANT: You must have values for all four of the required parameter fields or the test will fail.
+
+If you have only specified the first four parameters, the console user's ID must match the name ID returned by the identity provider for authentication to succeed.
+The console user must also be configured to use SAML authentication.
+
+When configuring SymmetricDS as a service provider, specify the below endpoints in your identity provider's settings. You can obtain the service provider metadata in XML format by visiting the Metadata URL.
+
+|===
+
+|Service Provider Entity ID / Metadata URL|http://{hostname}:{port}/saml/{engine.name}/metadata
+
+|Service Provider ACS URL|http://{hostname}:{port}/saml/{engine.name}/acs
+
+|===
+
+SymmetricDS is compatible with many different SAML identity providers. The main requirements for compatibility are that the identity provider must accept a SAML authentication request using the HTTP-Redirect binding and return a SAML response using the HTTP-POST binding.
+While compatibility is not limited to only these identity providers, the following IdPs have been tested and are confirmed to be compatible with SymmetricDS:
+
+* Auth0
+* CyberArk
+* JumpCloud
+* miniOrange
+* Okta
+* OneLogin
+* Ping Identity

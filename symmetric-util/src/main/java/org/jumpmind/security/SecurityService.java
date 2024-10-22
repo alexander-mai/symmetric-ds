@@ -89,7 +89,8 @@ public class SecurityService implements ISecurityService {
     @Override
     public KeyStore getTrustStore() {
         try {
-            KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
+            String keyStoreType = System.getProperty(SecurityConstants.SYSPROP_TRUSTSTORE_TYPE, KeyStore.getDefaultType());
+            KeyStore ks = KeyStore.getInstance(keyStoreType);
             if (trustStoreFileName != null) {
                 try (FileInputStream is = new FileInputStream(trustStoreFileName)) {
                     ks.load(is, getTrustStorePassword().toCharArray());
@@ -184,10 +185,12 @@ public class SecurityService implements ISecurityService {
             if (alias == null) {
                 alias = String.valueOf(entry.getTrustedCertificate().hashCode());
                 keyStore.setEntry(alias, entry, null);
-                log.info("Installing trusted certificate: {}", ((X509Certificate) entry.getTrustedCertificate()).getSubjectDN().getName());
+                log.info("Installing trusted certificate: {}",
+                        ((X509Certificate) entry.getTrustedCertificate()).getSubjectX500Principal().getName());
                 saveTrustStore(keyStore);
             } else {
-                log.info("Trusted certificate already installed: {}", ((X509Certificate) entry.getTrustedCertificate()).getSubjectDN().getName());
+                log.info("Trusted certificate already installed: {}",
+                        ((X509Certificate) entry.getTrustedCertificate()).getSubjectX500Principal().getName());
             }
         } catch (RuntimeException e) {
             throw e;
@@ -203,6 +206,10 @@ public class SecurityService implements ISecurityService {
 
     @Override
     public void installDefaultSslCert(String host) {
+    }
+
+    @Override
+    public void installDefaultSamlSslCert(String host) {
     }
 
     @Override
@@ -305,7 +312,7 @@ public class SecurityService implements ISecurityService {
         return new String(rot13(new String(Base64.decodeBase64(obfText.getBytes(Charset.defaultCharset())), Charset.defaultCharset())));
     }
 
-    private String unobfuscateIfNeeded(String systemPropertyName) {
+    public String unobfuscateIfNeeded(String systemPropertyName) {
         String value = System.getProperty(systemPropertyName);
         if (value != null && value.startsWith(SecurityConstants.PREFIX_OBF)) {
             value = unobfuscate(value.substring(SecurityConstants.PREFIX_OBF.length()));
@@ -460,9 +467,11 @@ public class SecurityService implements ISecurityService {
     protected byte[] getBytes(int byteSize) {
         byte[] bytes = new byte[byteSize];
         if (keyStoreFileName != null) {
+            log.info("Using random bytes for secret key");
             SecureRandom random = new SecureRandom();
             random.nextBytes(bytes);
         } else {
+            log.info("Using keystore password as bytes for secret key");
             byte[] password = getKeyStorePassword().getBytes(Charset.defaultCharset());
             for (int i = 0; i < byteSize; i++) {
                 bytes[i] = password[i < password.length ? i : password.length - 1];

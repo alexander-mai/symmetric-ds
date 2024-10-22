@@ -48,7 +48,8 @@ public class DmlStatementFactory implements IDmlStatementFactory {
     }
 
     public DmlStatement create(String databaseName, DmlStatementOptions options) {
-        if (DatabaseNamesConstants.ORACLE.equals(databaseName) || DatabaseNamesConstants.ORACLE122.equals(databaseName)) {
+        if (DatabaseNamesConstants.ORACLE.equals(databaseName) || DatabaseNamesConstants.ORACLE122.equals(databaseName) || DatabaseNamesConstants.ORACLE23
+                .equals(databaseName)) {
             return new OracleDmlStatement(options);
         } else if (DatabaseNamesConstants.POSTGRESQL.equals(databaseName) || (DatabaseNamesConstants.POSTGRESQL95.equals(databaseName) &&
                 System.getProperty("postgres.use.on.conflict", "").equalsIgnoreCase("false"))) {
@@ -67,7 +68,7 @@ public class DmlStatementFactory implements IDmlStatementFactory {
             return new MsSqlDmlStatement(options);
         } else if (DatabaseNamesConstants.HBASE.equals(databaseName)) {
             return new HbaseDmlStatement(options);
-        } else if (DatabaseNamesConstants.ASE.equals(databaseName)){
+        } else if (DatabaseNamesConstants.ASE.equals(databaseName)) {
             return new AseDmlStatement(options);
         } else {
             return new DmlStatement(options);

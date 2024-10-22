@@ -309,7 +309,8 @@ abstract public class AbstractWriterTest {
                         expected[i] = Double.valueOf(expected[i]).toString();
                     }
                 } else if (resultObj != null) {
-                    resultValue = resultObj.toString();
+                    resultValue = resultObj.toString().trim();
+                    expected[i] = expected[i].trim();
                 }
                 Assert.assertEquals(name[i] + ". " + printDatabase(), expected[i], resultValue);
             }
@@ -321,7 +322,8 @@ abstract public class AbstractWriterTest {
     }
 
     protected boolean isOracle() {
-        return DatabaseNamesConstants.ORACLE.equals(platform.getName()) || DatabaseNamesConstants.ORACLE122.equals(platform.getName());
+        return DatabaseNamesConstants.ORACLE.equals(platform.getName()) || DatabaseNamesConstants.ORACLE122.equals(platform.getName())
+                || DatabaseNamesConstants.ORACLE23.equals(platform.getName());
     }
 
     public void setErrorExpected(boolean errorExpected) {

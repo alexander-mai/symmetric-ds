@@ -215,8 +215,6 @@ public class PushService extends AbstractOfflineDetectorService implements IPush
                 log.info("Push data sent to {}", remote);
                 List<BatchAck> batchAcks = readAcks(extractedBatches, transport, transportManager, acknowledgeService, dataExtractorService);
                 status.updateOutgoingStatus(extractedBatches, batchAcks);
-                statisticManager.addJobStats(remote.getNodeId(), 1, "Push",
-                        processInfo.getStartTime().getTime(), processInfo.getLastStatusChangeTime().getTime(), status.getDataProcessed());
             }
             if (processInfo.getStatus() != ProcessStatus.ERROR) {
                 processInfo.setStatus(ProcessStatus.OK);
@@ -233,7 +231,7 @@ public class PushService extends AbstractOfflineDetectorService implements IPush
                     log.info("Removing identity because registration is required");
                     nodeService.deleteIdentity();
                     nodeService.deleteNodeSecurity(identity.getNodeId());
-                    nodeService.deleteNode(identity.getNodeId(), false);
+                    nodeService.deleteNode(identity.getNodeId(), remote.getNodeId(), false);
                 }
             }
         } finally {

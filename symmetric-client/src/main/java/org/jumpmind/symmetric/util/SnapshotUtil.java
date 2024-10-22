@@ -94,11 +94,11 @@ import org.jumpmind.symmetric.model.Node;
 import org.jumpmind.symmetric.model.NodeGroupLink;
 import org.jumpmind.symmetric.model.NodeSecurity;
 import org.jumpmind.symmetric.model.OutgoingBatch;
+import org.jumpmind.symmetric.model.ProcessInfo;
 import org.jumpmind.symmetric.model.Router;
 import org.jumpmind.symmetric.model.Trigger;
 import org.jumpmind.symmetric.model.TriggerHistory;
 import org.jumpmind.symmetric.model.TriggerRouter;
-import org.jumpmind.symmetric.monitor.MonitorTypeBlock;
 import org.jumpmind.symmetric.service.IClusterService;
 import org.jumpmind.symmetric.service.INodeService;
 import org.jumpmind.symmetric.service.IParameterService;
@@ -242,15 +242,19 @@ public class SnapshotUtil {
             byChannelId = "channel_id ,";
         }
         extractQuery(engine.getSqlTemplate(), tmpDir + File.separator + "sym_outgoing_batch_summary.csv",
-                "select node_id, " + byChannelId + "status, count(*), sum(data_row_count), sum(byte_count), sum(error_flag), min(create_time), " +
-                        "sum(router_millis), sum(extract_millis), sum(network_millis), sum(filter_millis), sum(load_millis), " +
-                        "sum(fallback_insert_count), sum(fallback_update_count), sum(missing_delete_count), sum(skip_count), sum(ignore_count) " +
+                "select node_id, " + byChannelId + "status, count(*) batch_count, sum(data_row_count) data_row_count, sum(byte_count) byte_count, " +
+                        "sum(error_flag) error_flag, min(create_time) min_create_time, sum(router_millis) router_millis, sum(extract_millis) extract_millis, " +
+                        "sum(network_millis) network_millis, sum(filter_millis) filter_millis, sum(load_millis) load_millis, " +
+                        "sum(fallback_insert_count) fallback_insert_count, sum(fallback_update_count) fallback_update_count, " +
+                        "sum(missing_delete_count) missing_delete_count, sum(skip_count) skip_count, sum(ignore_count) ignore_count " +
                         "from " + TableConstants.getTableName(tablePrefix, TableConstants.SYM_OUTGOING_BATCH) +
                         " group by node_id, " + byChannelId + "status");
         extractQuery(engine.getSqlTemplate(), tmpDir + File.separator + "sym_incoming_batch_summary.csv",
-                "select node_id, " + byChannelId + "status, count(*), sum(data_row_count), sum(byte_count), sum(error_flag), min(create_time), " +
-                        "sum(router_millis), sum(extract_millis), sum(network_millis), sum(filter_millis), sum(load_millis), " +
-                        "sum(fallback_insert_count), sum(fallback_update_count), sum(missing_delete_count), sum(skip_count), sum(ignore_count) " +
+                "select node_id, " + byChannelId + "status, count(*) batch_count, sum(data_row_count) data_row_count, sum(byte_count) byte_count, " +
+                        "sum(error_flag) error_flag, min(create_time) min_create_time, sum(router_millis) router_millis, sum(extract_millis) extract_millis, " +
+                        "sum(network_millis) network_millis, sum(filter_millis) filter_millis, sum(load_millis) load_millis, " +
+                        "sum(fallback_insert_count) fallback_insert_count, sum(fallback_update_count) fallback_update_count, " +
+                        "sum(missing_delete_count) missing_delete_count, sum(skip_count) skip_count, sum(ignore_count) ignore_count " +
                         "from " + TableConstants.getTableName(tablePrefix, TableConstants.SYM_INCOMING_BATCH) +
                         " group by node_id, " + byChannelId + "status");
         try {
@@ -262,6 +266,12 @@ public class SnapshotUtil {
                 TableConstants.getTableName(tablePrefix, TableConstants.SYM_TABLE_RELOAD_REQUEST));
         extract(export, new File(tmpDir, "sym_table_reload_status.csv"),
                 TableConstants.getTableName(tablePrefix, TableConstants.SYM_TABLE_RELOAD_STATUS));
+        extract(export, new File(tmpDir, "sym_compare_request.csv"),
+                TableConstants.getTableName(tablePrefix, TableConstants.SYM_COMPARE_REQUEST));
+        extract(export, new File(tmpDir, "sym_compare_status.csv"),
+                TableConstants.getTableName(tablePrefix, TableConstants.SYM_COMPARE_STATUS));
+        extract(export, new File(tmpDir, "sym_compare_table_status.csv"),
+                TableConstants.getTableName(tablePrefix, TableConstants.SYM_COMPARE_TABLE_STATUS));
         extract(export, 5000, "order by relative_dir, file_name", new File(tmpDir, "sym_file_snapshot.csv"),
                 TableConstants.getTableName(tablePrefix, TableConstants.SYM_FILE_SNAPSHOT));
         export.setIgnoreMissingTables(true);
@@ -275,6 +285,8 @@ public class SnapshotUtil {
                 TableConstants.getTableName(tablePrefix, TableConstants.SYM_CONTEXT));
         extract(export, 10000, "order by start_time desc", new File(tmpDir, "sym_node_host_channel_stats.csv"),
                 TableConstants.getTableName(tablePrefix, TableConstants.SYM_NODE_HOST_CHANNEL_STATS));
+        extract(export, 10000, "order by start_time desc", new File(tmpDir, "sym_node_host_stats.csv"),
+                TableConstants.getTableName(tablePrefix, TableConstants.SYM_NODE_HOST_STATS));
         extract(export, new File(tmpDir, "sym_registration_request.csv"),
                 TableConstants.getTableName(tablePrefix, TableConstants.SYM_REGISTRATION_REQUEST));
         try {
@@ -388,7 +400,9 @@ public class SnapshotUtil {
         createThreadsFile(tmpDir.getPath(), false);
         createThreadsFile(tmpDir.getPath(), true);
         createThreadStatsFile(tmpDir.getPath());
+        createProcessInfoFile(engine, tmpDir.getPath());
         try {
+            log.info("Writing transactions file");
             List<Transaction> transactions = targetPlatform.getTransactions();
             if (!transactions.isEmpty()) {
                 createTransactionsFile(engine, tmpDir.getPath(), transactions);
@@ -811,6 +825,44 @@ public class SnapshotUtil {
         return file;
     }
 
+    public static void createProcessInfoFile(ISymmetricEngine engine, String parent) {
+        try {
+            File file = new File(parent, "process-info.csv");
+            File fileActive = new File(parent, "process-info-active.csv");
+            List<ProcessInfo> infos = engine.getStatisticManager().getProcessInfos();
+            SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+            try (OutputStream outputStream = new FileOutputStream(file);
+                    OutputStream outputActiveStream = new FileOutputStream(fileActive);
+                    CsvWriter csvWriter = new CsvWriter(outputStream, ',', Charset.defaultCharset());
+                    CsvWriter csvActiveWriter = new CsvWriter(outputActiveStream, ',', Charset.defaultCharset())) {
+                csvWriter.setEscapeMode(CsvWriter.ESCAPE_MODE_DOUBLED);
+                String[] heading = { "Thread Name", "Source Node", "Target Node", "Type", "Queue", "Current Channel ID", "Status", "Current Data Count",
+                        "Total Data Count", "Total Batch Count", "Current Batch ID", "Current Batch Count", "Current Table Name", "Batch Start Time", "Load ID",
+                        "Start Time", "End Time" };
+                csvWriter.writeRecord(heading);
+                csvActiveWriter.writeRecord(heading);
+                for (ProcessInfo i : infos) {
+                    Thread t = i.getThread();
+                    String[] row = { t == null ? null : t.getName(), i.getSourceNodeId(), i.getTargetNodeId(), i.getProcessType().toString(),
+                            i.getQueue(), i.getCurrentChannelId(), i.getStatus().toString(), String.valueOf(i.getCurrentDataCount()),
+                            String.valueOf(i.getTotalDataCount()), String.valueOf(i.getTotalBatchCount()), String.valueOf(i.getCurrentBatchId()),
+                            String.valueOf(i.getCurrentBatchCount()), i.getCurrentTableName(),
+                            i.getCurrentBatchStartTime() == null ? null : df.format(i.getCurrentBatchStartTime()),
+                            String.valueOf(i.getCurrentLoadId()), i.getStartTime() == null ? null : df.format(i.getStartTime()),
+                            i.getEndTime() == null ? null : df.format(i.getEndTime()) };
+                    csvWriter.writeRecord(row);
+                    if (i.getEndTime() == null) {
+                        csvActiveWriter.writeRecord(row);
+                    }
+                }
+                csvWriter.flush();
+                csvActiveWriter.flush();
+            }
+        } catch (Exception e) {
+            log.warn("Failed to write process info", e);
+        }
+    }
+
     private static File createTransactionsFile(ISymmetricEngine engine, String parent, List<Transaction> transactions) {
         Map<String, Transaction> transactionMap = new HashMap<String, Transaction>();
         for (Transaction transaction : transactions) {
@@ -819,7 +871,7 @@ public class SnapshotUtil {
         List<Transaction> filteredTransactions = new ArrayList<Transaction>();
         String dbUser = engine.getParameterService().getString("db.user");
         for (Transaction transaction : transactions) {
-            MonitorTypeBlock.filterTransactions(transaction, transactionMap, filteredTransactions, dbUser, false, false);
+            SymmetricUtils.filterTransactions(transaction, transactionMap, filteredTransactions, dbUser, false, false);
         }
         File file = new File(parent, "transactions.csv");
         try (OutputStream outputStream = new FileOutputStream(file);
@@ -907,7 +959,7 @@ public class SnapshotUtil {
                     addTableToMap(catalogSchemas, new CatalogSchema(table.getCatalog(), table.getSchema()), table);
                 }
                 if (System.currentTimeMillis() - ts > timeoutMillis) {
-                    log.info("Reached time limit for table definitions");
+                    log.info("Reached time limit for capture table definitions");
                     break;
                 }
             }
@@ -934,6 +986,8 @@ public class SnapshotUtil {
         Map<NodeGroupLink, Map<String, List<TransformTable>>> extractTransformMap = new HashMap<NodeGroupLink, Map<String, List<TransformTable>>>();
         Map<NodeGroupLink, Map<String, List<TransformTable>>> loadTransformMap = new HashMap<NodeGroupLink, Map<String, List<TransformTable>>>();
         List<TriggerRouter> triggerRouters = triggerRouterService.getTriggerRoutersForTargetNode(parameterService.getNodeGroupId());
+        long timeoutMillis = engine.getParameterService().getLong(ParameterConstants.SNAPSHOT_OPERATION_TIMEOUT_MS, 30000);
+        long ts = System.currentTimeMillis();
         for (TriggerRouter triggerRouter : triggerRouters) {
             Trigger trigger = triggerRouter.getTrigger();
             if (!trigger.isSourceWildCarded()) {
@@ -990,6 +1044,10 @@ public class SnapshotUtil {
                     if (table != null) {
                         addTableToMap(catalogSchemas, new CatalogSchema(table.getCatalog(), table.getSchema()), table);
                     }
+                }
+                if (System.currentTimeMillis() - ts > timeoutMillis) {
+                    log.info("Reached time limit for load table definitions");
+                    break;
                 }
             }
         }

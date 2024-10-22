@@ -69,7 +69,7 @@ public interface ISymmetricDialect {
 
     public void removeDdlTrigger(StringBuilder sqlBuffer, String catalogName, String schemaName, String triggerName);
 
-    public boolean doesTriggerExist(String catalogName, String schema, String tableName, String triggerName);
+    public boolean doesTriggerExist(StringBuilder sqlBuffer, String catalogName, String schema, String tableName, String triggerName);
 
     public boolean doesDdlTriggerExist(String catalogName, String schema, String triggerName);
 
@@ -84,6 +84,8 @@ public interface ISymmetricDialect {
     public void dropRequiredDatabaseObjects();
 
     public void createRequiredDatabaseObjects();
+
+    public String getCreateRequiredDatabaseObjectsDDL();
 
     public IDatabasePlatform getPlatform();
 
@@ -104,6 +106,8 @@ public interface ISymmetricDialect {
     public BinaryEncoding getBinaryEncoding();
 
     public String getTransactionTriggerExpression(String defaultCatalog, String defaultSchema, Trigger trigger);
+
+    public String getTransactionId(ISqlTransaction transaction);
 
     public String createInitialLoadSqlFor(Node node, TriggerRouter trigger, Table table, TriggerHistory triggerHistory, Channel channel,
             String overrideSelectSql);

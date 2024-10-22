@@ -89,6 +89,7 @@ import org.jumpmind.db.sql.DmlStatement;
 import org.jumpmind.db.sql.DmlStatement.DmlType;
 import org.jumpmind.db.sql.DmlStatementOptions;
 import org.jumpmind.db.sql.ISqlTemplate;
+import org.jumpmind.db.sql.ISqlTransaction;
 import org.jumpmind.db.sql.Row;
 import org.jumpmind.db.sql.SqlException;
 import org.jumpmind.db.sql.SqlScript;
@@ -278,6 +279,18 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
     }
 
     public Table readTableFromDatabase(String catalogName, String schemaName, String tableName) {
+        try {
+            return readTableFromDatabaseAllowException(catalogName, schemaName, tableName);
+        } catch (Exception e) {
+            if (getSqlTemplate().isDeadlock(e)) {
+                log.warn("Deadlock occurred while reading {}, so retrying", tableName);
+                return readTableFromDatabaseAllowException(catalogName, schemaName, tableName);
+            }
+            throw e;
+        }
+    }
+
+    protected Table readTableFromDatabaseAllowException(String catalogName, String schemaName, String tableName) {
         String originalFullyQualifiedName = Table.getFullyQualifiedTableName(catalogName, schemaName, tableName);
         String defaultedCatalogName = catalogName == null ? getDefaultCatalog() : catalogName;
         String defaultedSchemaName = schemaName == null ? getDefaultSchema() : schemaName;
@@ -321,6 +334,21 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         }
         if (table != null && log.isDebugEnabled()) {
             log.debug("Just read table: \n{}", table.toVerboseString());
+        }
+        return table;
+    }
+
+    public Table readTableFromDatabase(ISqlTransaction transaction, String catalogName, String schemaName, String tableName) {
+        String defaultedCatalogName = catalogName == null ? getDefaultCatalog() : catalogName;
+        String defaultedSchemaName = schemaName == null ? getDefaultSchema() : schemaName;
+        Table table = ddlReader.readTable(transaction, defaultedCatalogName, defaultedSchemaName, tableName);
+        if (table == null && metadataIgnoreCase) {
+            table = ddlReader.readTable(transaction, StringUtils.toRootUpperCase(defaultedCatalogName), StringUtils.toRootUpperCase(defaultedSchemaName),
+                    tableName.toUpperCase());
+            if (table == null) {
+                table = ddlReader.readTable(transaction, StringUtils.toRootLowerCase(defaultedCatalogName), StringUtils.toRootLowerCase(defaultedSchemaName),
+                        tableName.toUpperCase());
+            }
         }
         return table;
     }
@@ -559,10 +587,12 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
                     concatenatedRow.append(row.getBoolean(name) ? "1" : "0");
                 } else if (column.isOfNumericType()) {
                     concatenatedRow.append(row.getString(name));
-                } else if (!column.isTimestampWithTimezone() && (type == Types.DATE || type == Types.TIME)) {
-                    concatenatedRow.append("\"").append(getDateTimeStringValue(name, type, row, false)).append("\"");
-                } else if (!column.isTimestampWithTimezone() && type == Types.TIMESTAMP) {
-                    concatenatedRow.append("\"").append(getTimestampStringValue(name, type, row, false)).append("\"");
+                } else if (column.isTimestampWithTimezone()) {
+                    appendString(concatenatedRow, getTimestampTzStringValue(name, type, row, false));
+                } else if (type == Types.DATE || type == Types.TIME) {
+                    appendString(concatenatedRow, getDateTimeStringValue(name, type, row, false));
+                } else if (type == Types.TIMESTAMP) {
+                    appendString(concatenatedRow, getTimestampStringValue(name, type, row, false));
                 } else if (column.isOfBinaryType()) {
                     byte[] bytes = row.getBytes(name);
                     if (bytes.length == 0) {
@@ -581,6 +611,12 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
             i++;
         }
         return concatenatedRow.toString();
+    }
+
+    protected void appendString(StringBuilder sb, String value) {
+        if (value != null) {
+            sb.append("\"").append(value).append("\"");
+        }
     }
 
     protected String getDateTimeStringValue(String name, int type, Row row, boolean useVariableDates) {
@@ -608,9 +644,17 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
                 long diff = ts.getTime() - System.currentTimeMillis();
                 return "${ts" + diff + "}";
             } else {
-                return String.format("%tF %tT.%09d", ts, ts, ts.getNanos());
+                String formattedDate = StringUtils.stripEnd(String.format("%tF %tT.%09d", ts, ts, ts.getNanos()), "0");
+                if (formattedDate.endsWith(".")) {
+                    formattedDate = formattedDate + "0";
+                }
+                return formattedDate;
             }
         }
+    }
+
+    protected String getTimestampTzStringValue(String name, int type, Row row, boolean useVariableDates) {
+        return row.getString(name);
     }
 
     public Map<String, String> getSqlScriptReplacementTokens() {
@@ -620,7 +664,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
     public String scrubSql(String sql) {
         Map<String, String> replacementTokens = getSqlScriptReplacementTokens();
         if (replacementTokens != null) {
-            return FormatUtils.replaceTokens(sql, replacementTokens, false).trim();
+            return FormatUtils.replaceTokens(sql, replacementTokens, false);
         } else {
             return sql;
         }
@@ -714,7 +758,9 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
             for (IndexColumn indexColumn : indices[0].getColumns()) {
                 Column column = result.getColumnWithName(indexColumn.getName());
                 if (column != null) {
+                    boolean required = column.isRequired();
                     column.setPrimaryKey(true);
+                    column.setRequired(required);
                 }
             }
         } else {

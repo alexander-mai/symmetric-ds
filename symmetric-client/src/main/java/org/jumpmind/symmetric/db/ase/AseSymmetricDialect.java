@@ -30,9 +30,7 @@ import java.util.List;
 
 import org.jumpmind.db.model.Column;
 import org.jumpmind.db.model.Database;
-import org.jumpmind.db.model.PlatformColumn;
 import org.jumpmind.db.model.Table;
-import org.jumpmind.db.model.TypeMap;
 import org.jumpmind.db.platform.IDatabasePlatform;
 import org.jumpmind.db.sql.IConnectionCallback;
 import org.jumpmind.db.sql.ISqlTemplate;
@@ -66,11 +64,6 @@ public class AseSymmetricDialect extends AbstractSymmetricDialect implements ISy
 
     public AseSymmetricDialect(IParameterService parameterService, IDatabasePlatform platform) {
         super(parameterService, platform);
-        if (getMajorVersion() >= 16) {
-            this.triggerTemplate = new Ase16TriggerTemplate(this);
-        } else {
-            this.triggerTemplate = new AseTriggerTemplate(this);
-        }
         try {
             pageSize = platform.getSqlTemplate().queryForInt(SQL_PAGE_SIZE);
             log.info("Page size is {}", pageSize);
@@ -85,6 +78,11 @@ public class AseSymmetricDialect extends AbstractSymmetricDialect implements ISy
         if (noCount != 0) {
             throw new SymmetricException("Incompatible setting for nocount detected.  Add the following to your\r\n"
                     + "engine properties file: db.init.sql=set nocount off");
+        }
+        if (getMajorVersion() >= 16) {
+            this.triggerTemplate = new Ase16TriggerTemplate(this);
+        } else {
+            this.triggerTemplate = new AseTriggerTemplate(this);
         }
     }
 
@@ -160,10 +158,6 @@ public class AseSymmetricDialect extends AbstractSymmetricDialect implements ISy
     }
 
     @Override
-    public void createRequiredDatabaseObjects() {
-    }
-
-    @Override
     public void dropRequiredDatabaseObjects() {
     }
 
@@ -173,7 +167,7 @@ public class AseSymmetricDialect extends AbstractSymmetricDialect implements ISy
         schemaName = schemaName == null ? "" : (schemaName + ".");
         final String sql = "drop trigger " + schemaName + triggerName;
         logSql(sql, sqlBuffer);
-        if (parameterService.is(ParameterConstants.AUTO_SYNC_TRIGGERS)) {
+        if (parameterService.is(ParameterConstants.AUTO_SYNC_TRIGGERS) && sqlBuffer == null) {
             log.info("Dropping {} trigger for {}", triggerName, Table.getFullyQualifiedTableName(catalogName, schemaName, tableName));
             ((JdbcSqlTransaction) transaction)
                     .executeCallback(new IConnectionCallback<Boolean>() {
@@ -221,7 +215,7 @@ public class AseSymmetricDialect extends AbstractSymmetricDialect implements ISy
     }
 
     @Override
-    protected boolean doesTriggerExistOnPlatform(final String catalogName, final String schema, final String tableName,
+    protected boolean doesTriggerExistOnPlatform(final StringBuilder sqlBuffer, final String catalogName, final String schema, final String tableName,
             final String triggerName) {
         return ((JdbcSqlTemplate) platform.getSqlTemplate())
                 .execute(new IConnectionCallback<Boolean>() {
@@ -236,6 +230,9 @@ public class AseSymmetricDialect extends AbstractSymmetricDialect implements ISy
                             ResultSet rs = null;
                             try {
                                 rs = stmt.executeQuery();
+                                if (rs.next()) {
+                                    return rs.getInt(1) > 0;
+                                }
                             } catch (Exception ex) {
                                 if (catalogName != null) {
                                     log.debug(
@@ -248,6 +245,9 @@ public class AseSymmetricDialect extends AbstractSymmetricDialect implements ISy
                                         log.debug("TRY AGAIN Exceute:  select count(*) from {}.dbo.sysobjects where type = 'TR' AND name ='{}'", catalogName,
                                                 triggerName);
                                         rs = stmt2.executeQuery();
+                                        if (rs.next()) {
+                                            return rs.getInt(1) > 0;
+                                        }
                                     } catch (Exception ex2) {
                                         log.error(String.format(
                                                 "Failed again with catalog... select count(*) from %s.dbo.sysobjects where type = 'TR' AND name = '%s'",
@@ -261,10 +261,6 @@ public class AseSymmetricDialect extends AbstractSymmetricDialect implements ISy
                                             "Detect trigger query failed. select count(*) from dbo.sysobjects where type = 'TR' AND name ='%s'", triggerName),
                                             ex);
                                 }
-                            }
-                            if (rs.next()) {
-                                int count = rs.getInt(1);
-                                return count > 0;
                             }
                         } finally {
                             if (catalogName != null) {
@@ -319,5 +315,9 @@ public class AseSymmetricDialect extends AbstractSymmetricDialect implements ISy
     @Override
     public int getMaxTriggerNameLength() {
         return 28;
+    }
+
+    public int getPageSize() {
+        return pageSize;
     }
 }

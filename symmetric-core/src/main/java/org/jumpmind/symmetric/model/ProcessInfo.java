@@ -64,6 +64,7 @@ public class ProcessInfo implements Serializable, Comparable<ProcessInfo>, Clone
     private long totalBatchCount;
     private long currentBatchId;
     private long currentBatchCount;
+    private long currentRowCount;
     private String currentChannelId;
     private String currentTableName;
     private transient Thread thread;
@@ -73,6 +74,7 @@ public class ProcessInfo implements Serializable, Comparable<ProcessInfo>, Clone
     private Date lastStatusChangeTime = new Date();
     private Date endTime;
     private IProcessInfoListener listener;
+    private boolean bulkLoadFlag = false;
 
     public ProcessInfo() {
         this(new ProcessInfoKey("", "", null));
@@ -124,6 +126,14 @@ public class ProcessInfo implements Serializable, Comparable<ProcessInfo>, Clone
         if (listener != null) {
             listener.changeDataCount(currentDataCount);
         }
+    }
+
+    public long getCurrentRowCount() {
+        return currentRowCount;
+    }
+
+    public void setCurrentRowCount(long rowCount) {
+        this.currentRowCount = rowCount;
     }
 
     public long getTotalBatchCount() {
@@ -310,6 +320,14 @@ public class ProcessInfo implements Serializable, Comparable<ProcessInfo>, Clone
 
     public void setListener(IProcessInfoListener listener) {
         this.listener = listener;
+    }
+
+    public boolean isBulkLoadFlag() {
+        return bulkLoadFlag;
+    }
+
+    public void setBulkLoadFlag(boolean bulkLoadFlag) {
+        this.bulkLoadFlag = bulkLoadFlag;
     }
 
     static public class ThreadData {

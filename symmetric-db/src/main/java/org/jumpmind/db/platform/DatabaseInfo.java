@@ -226,22 +226,46 @@ public class DatabaseInfo {
     private boolean requiredCharColumnEmptyStringSameAsNull;
     private boolean notNullColumnsSupported = true;
     private boolean zeroDateAllowed;
+    private boolean infinityDateAllowed;
     private String cteExpression;
     private boolean logBased;
     private boolean triggersContainJava = false;
+    private boolean canDeleteUsingExists = true;
+    private boolean canTriggerExistWithoutTable = false;
+    private boolean jdbcTimestampAllowed = true;
 
     /**
      * Creates a new platform info object.
      */
     public DatabaseInfo() {
-        this.typesWithNullDefault.add(Integer.valueOf(Types.CHAR));
-        this.typesWithNullDefault.add(Integer.valueOf(Types.VARCHAR));
-        this.typesWithNullDefault.add(Integer.valueOf(Types.LONGVARCHAR));
-        this.typesWithNullDefault.add(Integer.valueOf(Types.CLOB));
-        this.typesWithNullDefault.add(Integer.valueOf(Types.BINARY));
-        this.typesWithNullDefault.add(Integer.valueOf(Types.VARBINARY));
-        this.typesWithNullDefault.add(Integer.valueOf(Types.LONGVARBINARY));
-        this.typesWithNullDefault.add(Integer.valueOf(Types.BLOB));
+        this.typesWithNullDefault.add(Types.CHAR);
+        this.typesWithNullDefault.add(Types.VARCHAR);
+        this.typesWithNullDefault.add(Types.LONGVARCHAR);
+        this.typesWithNullDefault.add(Types.CLOB);
+        this.typesWithNullDefault.add(Types.BINARY);
+        this.typesWithNullDefault.add(Types.VARBINARY);
+        this.typesWithNullDefault.add(Types.LONGVARBINARY);
+        this.typesWithNullDefault.add(Types.BLOB);
+        this.typesWithNullDefault.add(Types.BIT);
+        this.typesWithNullDefault.add(Types.BOOLEAN);
+        this.typesWithNullDefault.add(Types.TINYINT);
+        this.typesWithNullDefault.add(Types.SMALLINT);
+        this.typesWithNullDefault.add(Types.INTEGER);
+        this.typesWithNullDefault.add(Types.BIGINT);
+        this.typesWithNullDefault.add(Types.FLOAT);
+        this.typesWithNullDefault.add(Types.REAL);
+        this.typesWithNullDefault.add(Types.DOUBLE);
+        this.typesWithNullDefault.add(Types.NUMERIC);
+        this.typesWithNullDefault.add(Types.DECIMAL);
+        this.typesWithNullDefault.add(Types.DATE);
+        this.typesWithNullDefault.add(Types.TIME);
+        this.typesWithNullDefault.add(Types.TIMESTAMP);
+        this.typesWithNullDefault.add(Types.NCHAR);
+        this.typesWithNullDefault.add(Types.NVARCHAR);
+        this.typesWithNullDefault.add(Types.LONGNVARCHAR);
+        this.typesWithNullDefault.add(Types.NCLOB);
+        this.typesWithNullDefault.add(Types.TIMESTAMP_WITH_TIMEZONE);
+        this.typesWithNullDefault.add(Types.TIME_WITH_TIMEZONE);
         this.typesWithSize.add(Integer.valueOf(Types.CHAR));
         this.typesWithSize.add(Integer.valueOf(Types.VARCHAR));
         this.typesWithSize.add(Integer.valueOf(Types.BINARY));
@@ -901,7 +925,7 @@ public class DatabaseInfo {
      * @return The native type or <code>null</code> if there isn't one defined
      */
     public String getNativeType(int typeCode) {
-        return (String) this.nativeTypes.get(Integer.valueOf(typeCode));
+        return this.nativeTypes.get(Integer.valueOf(typeCode));
     }
 
     /**
@@ -915,7 +939,7 @@ public class DatabaseInfo {
      * @return The target jdbc type
      */
     public int getTargetJdbcType(int typeCode) {
-        Integer targetJdbcType = (Integer) targetJdbcTypes.get(Integer.valueOf(typeCode));
+        Integer targetJdbcType = targetJdbcTypes.get(Integer.valueOf(typeCode));
         return targetJdbcType == null ? typeCode : targetJdbcType.intValue();
     }
 
@@ -1067,7 +1091,7 @@ public class DatabaseInfo {
      * @return The default size or <code>null</code> if none is defined
      */
     public Integer getDefaultSize(int jdbcTypeCode) {
-        return (Integer) typesDefaultSizes.get(Integer.valueOf(jdbcTypeCode));
+        return typesDefaultSizes.get(Integer.valueOf(jdbcTypeCode));
     }
 
     /**
@@ -1304,6 +1328,14 @@ public class DatabaseInfo {
         this.zeroDateAllowed = zeroDateAllowed;
     }
 
+    public boolean isInfinityDateAllowed() {
+        return infinityDateAllowed;
+    }
+
+    public void setInfinityDateAllowed(boolean infinityDateAllowed) {
+        this.infinityDateAllowed = infinityDateAllowed;
+    }
+
     public boolean isTriggersCreateOrReplaceSupported() {
         return triggersCreateOrReplaceSupported;
     }
@@ -1342,5 +1374,29 @@ public class DatabaseInfo {
 
     public void setFunctionalIndicesSupported(boolean functionalIndicesSupported) {
         this.functionalIndicesSupported = functionalIndicesSupported;
+    }
+
+    public boolean canDeleteUsingExists() {
+        return canDeleteUsingExists;
+    }
+
+    public void setCanDeleteUsingExists(boolean canDeleteUsingExists) {
+        this.canDeleteUsingExists = canDeleteUsingExists;
+    }
+
+    public boolean canTriggerExistWithoutTable() {
+        return canTriggerExistWithoutTable;
+    }
+
+    public void setCanTriggerExistWithoutTable(boolean canTriggerExistWithoutTable) {
+        this.canTriggerExistWithoutTable = canTriggerExistWithoutTable;
+    }
+
+    public boolean isJdbcTimestampAllowed() {
+        return jdbcTimestampAllowed;
+    }
+
+    public void setJdbcTimestampAllowed(boolean jdbcTimestampAllowed) {
+        this.jdbcTimestampAllowed = jdbcTimestampAllowed;
     }
 }

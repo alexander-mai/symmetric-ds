@@ -40,7 +40,7 @@ char *sym_escape(char *str)
    result = (char *) ib_util_malloc(count + len + 1);
    if (result == NULL)
    {
-      return empty_str;
+      return NULL;
    }
 
    for (i = 0, j = 0; i < len; i++, j++)
@@ -68,8 +68,9 @@ char *sym_hex(BLOBCALLBACK blob)
 {
    char *result, *hex_result;
    long hex_result_size;
-   long bytes_read;
-   long bytes_left, total_bytes_read;
+   ISC_USHORT bytes_read;
+   long total_length;
+   long total_bytes_read;
    long i, j;
 
    bytes_read = 0;
@@ -78,35 +79,35 @@ char *sym_hex(BLOBCALLBACK blob)
    if (blob->blob_handle == NULL)
    {
       result = (char *) malloc(1);
+      if (!result)
+      {
+          return NULL;
+      }
    }
    else
    {
-      result = (char *) malloc(blob->blob_total_length + 1);
-      memset(result, 0, blob->blob_total_length + 1);
-
-      bytes_left = blob->blob_total_length;
-      while (bytes_left > 0)
+      total_length = blob->blob_total_length;
+      result = (char *) malloc(total_length + 1);
+      if (!result)
       {
-         if (!blob->blob_get_segment(blob->blob_handle, (char *)result + total_bytes_read,
-                 blob->blob_total_length, &bytes_read))
-         {
-            break;
-         }
-
+          return NULL;
+      }
+      memset(result, 0, total_length + 1);
+      for (i = 0; i < blob->blob_number_segments; ++i)
+      {
+         bytes_read = 0;
+         blob->blob_get_segment(blob->blob_handle, (char*)result + total_bytes_read, total_length - total_bytes_read, &bytes_read);
          total_bytes_read += bytes_read;
-         bytes_left -= bytes_read;
       }
    }
-   
-   while (total_bytes_read>0 && isspace(result[total_bytes_read-1])) 
-   {
-    --total_bytes_read;
-   }
-
    result[total_bytes_read] = '\0';
   
    hex_result_size = (total_bytes_read * 2) + 1;
    hex_result = (char *) ib_util_malloc(hex_result_size);
+   if (!hex_result)
+   {
+      return NULL;
+   }
    memset(hex_result, 0, hex_result_size);
    for (i = 0, j = 0; i < total_bytes_read; i++, j += 2)
    {

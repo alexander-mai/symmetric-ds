@@ -21,11 +21,16 @@
 package org.jumpmind.symmetric.load;
 
 import java.sql.Timestamp;
+import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
+import org.apache.commons.lang3.StringUtils;
+import org.jumpmind.db.model.Table;
+import org.jumpmind.db.platform.DatabaseNamesConstants;
 import org.jumpmind.db.platform.IAlterDatabaseInterceptor;
 import org.jumpmind.db.platform.IDatabasePlatform;
 import org.jumpmind.db.platform.cassandra.CassandraPlatform;
@@ -59,6 +64,7 @@ import org.jumpmind.symmetric.io.data.writer.KafkaWriter;
 import org.jumpmind.symmetric.io.data.writer.ResolvedData;
 import org.jumpmind.symmetric.io.data.writer.TransformWriter;
 import org.jumpmind.symmetric.model.Data;
+import org.jumpmind.symmetric.model.Trigger;
 import org.jumpmind.symmetric.model.TriggerHistory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -67,6 +73,7 @@ public class DefaultDataLoaderFactory extends AbstractDataLoaderFactory implemen
     protected final Logger log = LoggerFactory.getLogger(getClass());
     protected ISymmetricEngine engine;
     protected Set<String> conflictLosingParentRows = new HashSet<String>();
+    protected Map<String, Table> targetTableMap = new ConcurrentHashMap<String, Table>();
 
     public DefaultDataLoaderFactory() {
     }
@@ -129,107 +136,197 @@ public class DefaultDataLoaderFactory extends AbstractDataLoaderFactory implemen
                 throw new RuntimeException(e);
             }
         }
-        DynamicDefaultDatabaseWriter writer = new DynamicDefaultDatabaseWriter(symmetricDialect.getPlatform(),
-                symmetricDialect.getTargetPlatform(), symmetricDialect.getTablePrefix(),
-                new DefaultTransformWriterConflictResolver(transformWriter) {
-                    @Override
-                    protected void beforeResolutionAttempt(CsvData csvData, Conflict conflict) {
-                        if (conflict.getPingBack() != PingBack.OFF) {
-                            DynamicDefaultDatabaseWriter writer = transformWriter
-                                    .getNestedWriterOfType(DynamicDefaultDatabaseWriter.class);
-                            ISqlTransaction transaction = writer.getTransaction();
-                            if (transaction != null) {
-                                symmetricDialect.enableSyncTriggers(transaction);
-                            }
+        DefaultTransformWriterConflictResolver resolver = new DefaultTransformWriterConflictResolver(transformWriter) {
+            @Override
+            protected void beforeResolutionAttempt(CsvData csvData, Conflict conflict) {
+                if (conflict.getPingBack() != PingBack.OFF) {
+                    DynamicDefaultDatabaseWriter writer = transformWriter
+                            .getNestedWriterOfType(DynamicDefaultDatabaseWriter.class);
+                    ISqlTransaction transaction = writer.getTransaction();
+                    if (transaction != null) {
+                        symmetricDialect.enableSyncTriggers(transaction);
+                    }
+                }
+            }
+
+            @Override
+            protected void afterResolutionAttempt(CsvData csvData, Conflict conflict) {
+                DynamicDefaultDatabaseWriter writer = transformWriter.getNestedWriterOfType(DynamicDefaultDatabaseWriter.class);
+                if (Boolean.TRUE.equals(writer.getContext().get(AbstractDatabaseWriter.TRANSACTION_ABORTED))) {
+                    return;
+                }
+                if (conflict.getPingBack() == PingBack.SINGLE_ROW) {
+                    ISqlTransaction transaction = writer.getTransaction();
+                    if (transaction != null) {
+                        symmetricDialect.disableSyncTriggers(transaction, sourceNodeId);
+                    }
+                }
+                if (conflict.getResolveType() == ResolveConflict.NEWER_WINS &&
+                        conflict.getDetectType() != DetectConflict.USE_TIMESTAMP &&
+                        conflict.getDetectType() != DetectConflict.USE_VERSION &&
+                        (!engine.getParameterService().is(ParameterConstants.NODE_LOAD_ONLY) ||
+                                engine.getParameterService().is(ParameterConstants.START_LOG_MINER_JOB))) {
+                    Boolean isWinner = (Boolean) writer.getContext().get(DatabaseConstants.IS_CONFLICT_WINNER);
+                    if (isWinner != null && isWinner == true) {
+                        writer.getContext().remove(DatabaseConstants.IS_CONFLICT_WINNER);
+                        ISqlTransaction transaction = writer.getTransaction();
+                        if (transaction != null) {
+                            handleWinnerForNewerCaptureWins(transaction, csvData);
                         }
                     }
+                }
+            }
 
-                    @Override
-                    protected void afterResolutionAttempt(CsvData csvData, Conflict conflict) {
-                        DynamicDefaultDatabaseWriter writer = transformWriter.getNestedWriterOfType(DynamicDefaultDatabaseWriter.class);
-                        if (Boolean.TRUE.equals(writer.getContext().get(AbstractDatabaseWriter.TRANSACTION_ABORTED))) {
-                            return;
-                        }
-                        if (conflict.getPingBack() == PingBack.SINGLE_ROW) {
-                            ISqlTransaction transaction = writer.getTransaction();
-                            if (transaction != null) {
-                                symmetricDialect.disableSyncTriggers(transaction, sourceNodeId);
-                            }
-                        }
-                        if (conflict.getResolveType() == ResolveConflict.NEWER_WINS &&
-                                conflict.getDetectType() != DetectConflict.USE_TIMESTAMP &&
-                                conflict.getDetectType() != DetectConflict.USE_VERSION) {
-                            Boolean isWinner = (Boolean) writer.getContext().get(DatabaseConstants.IS_CONFLICT_WINNER);
-                            if (isWinner != null && isWinner == true) {
-                                writer.getContext().remove(DatabaseConstants.IS_CONFLICT_WINNER);
-                                ISqlTransaction transaction = writer.getTransaction();
-                                if (transaction != null) {
-                                    handleWinnerForNewerCaptureWins(transaction, csvData);
-                                }
-                            }
-                        }
+            /**
+             * When using new captured row wins, the winning row is saved to sym_data so other conflicts can see it. When two nodes are in conflict, they race
+             * to update the third node, but the first node will get no conflict, so we send a script back to all but winning node to ask if they have a newer
+             * row.
+             */
+            protected void handleWinnerForNewerCaptureWins(ISqlTransaction transaction, CsvData csvData) {
+                boolean isLogMiner = engine.getParameterService().is(ParameterConstants.START_LOG_MINER_JOB);
+                String tableName = csvData.getAttribute(CsvData.ATTRIBUTE_TABLE_NAME);
+                Timestamp loadingTs = csvData.getAttribute(CsvData.ATTRIBUTE_CREATE_TIME);
+                List<TriggerHistory> hists = engine.getTriggerRouterService().getActiveTriggerHistories(tableName);
+                if (hists != null && hists.size() > 0 && loadingTs != null) {
+                    TriggerHistory hist = hists.get(0);
+                    Data data = new Data(hist.getSourceTableName(), csvData.getDataEventType(),
+                            csvData.getCsvData(CsvData.ROW_DATA), csvData.getCsvData(CsvData.PK_DATA), hist,
+                            csvData.getAttribute(CsvData.ATTRIBUTE_CHANNEL_ID), null, csvData.getAttribute(CsvData.ATTRIBUTE_SOURCE_NODE_ID));
+                    data.setOldData(csvData.getCsvData(CsvData.OLD_DATA));
+                    data.setPreRouted(true);
+                    data.setCreateTime(csvData.getAttribute(CsvData.ATTRIBUTE_CREATE_TIME));
+                    if (isLogMiner) {
+                        engine.getDataService().insertData(data);
+                    } else {
+                        engine.getDataService().insertData(transaction, data);
                     }
-
-                    /**
-                     * When using new captured row wins, the winning row is saved to sym_data so other conflicts can see it. When two nodes are in conflict,
-                     * they race to update the third node, but the first node will get no conflict, so we send a script back to all but winning node to ask if
-                     * they have a newer row.
-                     */
-                    protected void handleWinnerForNewerCaptureWins(ISqlTransaction transaction, CsvData csvData) {
-                        String tableName = csvData.getAttribute(CsvData.ATTRIBUTE_TABLE_NAME);
-                        Timestamp loadingTs = csvData.getAttribute(CsvData.ATTRIBUTE_CREATE_TIME);
-                        List<TriggerHistory> hists = engine.getTriggerRouterService().getActiveTriggerHistories(tableName);
-                        if (hists != null && hists.size() > 0 && loadingTs != null) {
-                            TriggerHistory hist = hists.get(0);
-                            Data data = new Data(hist.getSourceTableName(), csvData.getDataEventType(),
-                                    csvData.getCsvData(CsvData.ROW_DATA), csvData.getCsvData(CsvData.PK_DATA), hist,
-                                    csvData.getAttribute(CsvData.ATTRIBUTE_CHANNEL_ID), null, csvData.getAttribute(CsvData.ATTRIBUTE_SOURCE_NODE_ID));
-                            data.setOldData(csvData.getCsvData(CsvData.OLD_DATA));
-                            data.setPreRouted(true);
-                            data.setCreateTime(csvData.getAttribute(CsvData.ATTRIBUTE_CREATE_TIME));
-                            engine.getDataService().insertData(transaction, data);
-                            String channelId = csvData.getAttribute(CsvData.ATTRIBUTE_CHANNEL_ID);
-                            if (channelId != null && !channelId.equals(Constants.CHANNEL_RELOAD)) {
-                                String pkCsvData = CsvUtils.escapeCsvData(getPkCsvData(csvData, hist));
-                                String nodeTableName = TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_NODE);
-                                List<TriggerHistory> nodeHists = engine.getTriggerRouterService().getActiveTriggerHistories(nodeTableName);
-                                if (nodeHists != null && nodeHists.size() > 0 && pkCsvData != null) {
-                                    String sourceNodeId = csvData.getAttribute(CsvData.ATTRIBUTE_SOURCE_NODE_ID);
-                                    long createTime = data.getCreateTime() != null ? data.getCreateTime().getTime() : 0;
-                                    String script = "if (context != void && context != null && org.jumpmind.symmetric.Version.isOlderVersion(\"3.12.4\")) { " +
-                                            "engine.getDataService().sendNewerDataToNode(context.findTransaction(), SOURCE_NODE_ID, \"" +
-                                            tableName + "\", " + pkCsvData + ", new Date(" +
-                                            createTime + "L), \"" + sourceNodeId + "\"); }";
-                                    Data scriptData = new Data(nodeTableName, DataEventType.BSH,
-                                            CsvUtils.escapeCsvData(script), null, nodeHists.get(0), Constants.CHANNEL_RELOAD, null, null);
-                                    scriptData.setSourceNodeId(sourceNodeId);
-                                    engine.getDataService().insertData(transaction, scriptData);
-                                }
-                            }
-                        }
-                    }
-
-                    protected String getPkCsvData(CsvData csvData, TriggerHistory hist) {
-                        String pkCsvData = csvData.getCsvData(CsvData.PK_DATA);
-                        if (pkCsvData == null) {
-                            if (hist.getParsedPkColumnNames() != null && hist.getParsedPkColumnNames().length > 0) {
-                                String[] pkData = new String[hist.getParsedPkColumnNames().length];
-                                Map<String, String> values = csvData.toColumnNameValuePairs(hist.getParsedPkColumnNames(), CsvData.ROW_DATA);
-                                int i = 0;
-                                for (String name : hist.getParsedPkColumnNames()) {
-                                    pkData[i++] = values.get(name);
-                                }
-                                pkCsvData = CsvUtils.escapeCsvData(pkData);
+                    String channelId = csvData.getAttribute(CsvData.ATTRIBUTE_CHANNEL_ID);
+                    if (channelId != null && !channelId.equals(Constants.CHANNEL_RELOAD)) {
+                        String pkCsvData = CsvUtils.escapeCsvData(getPkCsvData(csvData, hist));
+                        String nodeTableName = TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_NODE);
+                        List<TriggerHistory> nodeHists = engine.getTriggerRouterService().getActiveTriggerHistories(nodeTableName);
+                        if (nodeHists != null && nodeHists.size() > 0 && pkCsvData != null) {
+                            String sourceNodeId = csvData.getAttribute(CsvData.ATTRIBUTE_SOURCE_NODE_ID);
+                            long createTime = data.getCreateTime() != null ? data.getCreateTime().getTime() : 0;
+                            String script = "if (context != void && context != null && org.jumpmind.symmetric.Version.isOlderVersion(\"3.12.4\")) { " +
+                                    "engine.getDataService().sendNewerDataToNode(context.findTransaction(), SOURCE_NODE_ID, \"" +
+                                    hist.getSourceTableName() + "\", " + pkCsvData + ", new Date(" +
+                                    createTime + "L), \"" + sourceNodeId + "\"); }";
+                            Data scriptData = new Data(nodeTableName, DataEventType.BSH,
+                                    CsvUtils.escapeCsvData(script), null, nodeHists.get(0), Constants.CHANNEL_RELOAD, null, null);
+                            scriptData.setSourceNodeId(sourceNodeId);
+                            if (isLogMiner) {
+                                engine.getDataService().insertData(scriptData);
                             } else {
-                                pkCsvData = csvData.getCsvData(CsvData.ROW_DATA);
+                                engine.getDataService().insertData(transaction, scriptData);
                             }
                         }
-                        if (pkCsvData != null) {
-                            pkCsvData = pkCsvData.replace("\n", "\\n").replace("\r", "\\r");
-                        }
-                        return pkCsvData;
                     }
-                }, buildDatabaseWriterSettings(filters, errorHandlers, conflictSettings, resolvedData));
+                }
+            }
+
+            protected String getPkCsvData(CsvData csvData, TriggerHistory hist) {
+                String pkCsvData = csvData.getCsvData(CsvData.PK_DATA);
+                if (pkCsvData == null) {
+                    if (hist.getParsedPkColumnNames() != null && hist.getParsedPkColumnNames().length > 0) {
+                        String[] pkData = new String[hist.getParsedPkColumnNames().length];
+                        Map<String, String> values = csvData.toColumnNameValuePairs(hist.getParsedPkColumnNames(), CsvData.ROW_DATA);
+                        int i = 0;
+                        for (String name : hist.getParsedPkColumnNames()) {
+                            pkData[i++] = values.get(name);
+                        }
+                        pkCsvData = CsvUtils.escapeCsvData(pkData);
+                    } else {
+                        pkCsvData = csvData.getCsvData(CsvData.ROW_DATA);
+                    }
+                }
+                if (pkCsvData != null) {
+                    pkCsvData = pkCsvData.replace("\n", "\\n").replace("\r", "\\r");
+                }
+                return pkCsvData;
+            }
+
+            @Override
+            protected boolean isCaptureTimeNewer(Conflict conflict, AbstractDatabaseWriter writer, CsvData data, String tableName) {
+                Table table = writer.getTargetTable();
+                if (table != null) {
+                    List<TriggerHistory> hists = engine.getTriggerRouterService().getActiveTriggerHistoriesFromCache();
+                    for (TriggerHistory hist : hists) {
+                        if (hist.getSourceTableName().equalsIgnoreCase(table.getName()) &&
+                                (StringUtils.isBlank(hist.getSourceCatalogName()) || hist.getSourceCatalogName().equalsIgnoreCase(table.getCatalog())) &&
+                                (StringUtils.isBlank(hist.getSourceSchemaName()) || hist.getSourceSchemaName().equalsIgnoreCase(table.getSchema())) &&
+                                (!engine.getParameterService().is(ParameterConstants.NODE_LOAD_ONLY) ||
+                                        engine.getParameterService().is(ParameterConstants.START_LOG_MINER_JOB))) {
+                            return super.isCaptureTimeNewer(conflict, writer, data, hist.getSourceTableName());
+                        }
+                    }
+                }
+                return true;
+            }
+
+            @Override
+            protected void captureMissingDelete(Conflict conflict, AbstractDatabaseWriter writer, CsvData data) {
+                List<TriggerHistory> hists = engine.getTriggerRouterService().getActiveTriggerHistories(writer.getTargetTable().getName());
+                if (hists != null && !hists.isEmpty()) {
+                    TriggerHistory hist = hists.get(0);
+                    Trigger trigger = engine.getTriggerRouterService().getTriggerById(hist.getTriggerId(), false);
+                    if (trigger != null && trigger.isSyncOnIncomingBatch()) {
+                        Data d = new Data();
+                        d.setTableName(hist.getSourceTableName());
+                        d.setDataEventType(data.getDataEventType());
+                        d.setPkData(data.getCsvData(CsvData.PK_DATA));
+                        d.setOldData(data.getCsvData(CsvData.OLD_DATA));
+                        d.setTriggerHistory(hist);
+                        d.setChannelId(trigger.getChannelId());
+                        d.setSourceNodeId(data.getAttribute(CsvData.ATTRIBUTE_SOURCE_NODE_ID));
+                        d.setCreateTime(new Date());
+                        log.debug("Capturing delete of missing row with pk data of {}", d.getPkData());
+                        engine.getDataService().insertData(writer.getContext().findTransaction(), d);
+                    }
+                }
+            }
+        };
+        DynamicDefaultDatabaseWriter writer = null;
+        if (engine.getCacheManager().isUsingTargetExternalId(false)) {
+            writer = new DynamicDefaultDatabaseWriter(symmetricDialect.getPlatform(), symmetricDialect.getTargetPlatform(),
+                    symmetricDialect.getTablePrefix(), resolver, buildDatabaseWriterSettings(filters, errorHandlers, conflictSettings, resolvedData)) {
+                protected String getTableKey(Table table) {
+                    if (!table.getName().contains(batch.getSourceNodeId())) {
+                        return super.getTableKey(table);
+                    } else {
+                        try {
+                            table = (Table) table.clone();
+                            table.setName(table.getName().replace(batch.getSourceNodeId(), ""));
+                        } catch (CloneNotSupportedException e) {
+                        }
+                        return table.getTableKey();
+                    }
+                }
+
+                protected Table lookupTableFromCache(Table sourceTable, String tableKey) {
+                    if (!sourceTable.getName().contains(batch.getSourceNodeId())) {
+                        return super.lookupTableFromCache(sourceTable, tableKey);
+                    } else {
+                        Table table = targetTableMap.get(tableKey);
+                        if (table != null) {
+                            try {
+                                table = (Table) table.clone();
+                                table.setName(sourceTable.getName());
+                            } catch (CloneNotSupportedException e) {
+                            }
+                        }
+                        return table;
+                    }
+                }
+
+                protected void putTableInCache(String tableKey, Table table) {
+                    targetTableMap.put(tableKey, table);
+                }
+            };
+        } else {
+            writer = new DynamicDefaultDatabaseWriter(symmetricDialect.getPlatform(), symmetricDialect.getTargetPlatform(),
+                    symmetricDialect.getTablePrefix(), resolver, buildDatabaseWriterSettings(filters, errorHandlers, conflictSettings, resolvedData));
+        }
         return writer;
     }
 
@@ -241,7 +338,6 @@ public class DefaultDataLoaderFactory extends AbstractDataLoaderFactory implemen
             List<IDatabaseWriterErrorHandler> errorHandlers, List<? extends Conflict> conflictSettings,
             List<ResolvedData> resolvedDatas) {
         DatabaseWriterSettings settings = buildParameterDatabaseWriterSettings(conflictSettings);
-        settings.setLoadOnlyNode(engine.getParameterService().is(ParameterConstants.NODE_LOAD_ONLY));
         settings.setDatabaseWriterFilters(filters);
         settings.setDatabaseWriterErrorHandlers(errorHandlers);
         settings.setResolvedData(resolvedDatas);
@@ -252,6 +348,12 @@ public class DefaultDataLoaderFactory extends AbstractDataLoaderFactory implemen
                 .toArray(new IAlterDatabaseInterceptor[alterDatabaseInterceptors.size()]);
         settings.setAlterDatabaseInterceptors(interceptors);
         return settings;
+    }
+
+    @Override
+    protected boolean getDefaultTreatBitAsInteger() {
+        String name = engine.getSymmetricDialect().getTargetPlatform().getName();
+        return name.equals(DatabaseNamesConstants.MYSQL) || name.equals(DatabaseNamesConstants.MARIADB);
     }
 
     @Override

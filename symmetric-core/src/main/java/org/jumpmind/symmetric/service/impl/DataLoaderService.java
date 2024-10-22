@@ -133,6 +133,8 @@ import org.jumpmind.symmetric.service.RegistrationRequiredException;
 import org.jumpmind.symmetric.service.impl.TransformService.TransformTableNodeGroupLink;
 import org.jumpmind.symmetric.statistic.IStatisticManager;
 import org.jumpmind.symmetric.transport.AuthenticationException;
+import org.jumpmind.symmetric.transport.AuthenticationExpiredException;
+import org.jumpmind.symmetric.transport.ConnectionDuplicateException;
 import org.jumpmind.symmetric.transport.ConnectionRejectedException;
 import org.jumpmind.symmetric.transport.IIncomingTransport;
 import org.jumpmind.symmetric.transport.ITransportManager;
@@ -437,10 +439,6 @@ public class DataLoaderService extends AbstractService implements IDataLoaderSer
                 log.info("{} data and {} batches loaded during push request from {}",
                         new Object[] { okDataCount, okBatchesCount, sourceNode.toString() });
             }
-            statisticManager.addJobStats(sourceNode.getNodeId(), 1, "Push Handler",
-                    processInfo.getStartTime().getTime(),
-                    processInfo.getLastStatusChangeTime().getTime(),
-                    okDataCount);
         }
     }
 
@@ -526,6 +524,10 @@ public class DataLoaderService extends AbstractService implements IDataLoaderSer
                     remote.getNodeId(), remote.getSyncUrl(), e);
             throw e;
         }
+    }
+
+    public List<IncomingBatch> loadDataFromTransport(ProcessInfo processInfo, Node sourceNode, IIncomingTransport transport) throws IOException {
+        return loadDataFromTransport(processInfo, sourceNode, transport, null);
     }
 
     /**
@@ -633,7 +635,7 @@ public class DataLoaderService extends AbstractService implements IDataLoaderSer
                 engine.getDataService().reloadMissingForeignKeyRowsReverse(sourceNode.getNodeId(), ctx.getTable(), ctx.getData(), null,
                         parameterService.is(ParameterConstants.AUTO_RESOLVE_FOREIGN_KEY_VIOLATION_REVERSE_PEERS));
             }
-            logOrRethrow(ex);
+            logOrRethrow(ex, sourceNode.getNodeId());
         } finally {
             transport.close();
             for (ILoadSyncLifecycleListener l : extensionService
@@ -642,7 +644,7 @@ public class DataLoaderService extends AbstractService implements IDataLoaderSer
             }
         }
         List<IncomingBatch> batchesProcessed = listener.getBatchesProcessed();
-        if (error != null) {
+        if (error != null && error instanceof ProtocolException) {
             batchesProcessed.add(new IncomingBatch());
         }
         return batchesProcessed;
@@ -656,7 +658,7 @@ public class DataLoaderService extends AbstractService implements IDataLoaderSer
         }
     }
 
-    protected void logOrRethrow(Throwable ex) throws IOException {
+    protected void logOrRethrow(Throwable ex, String sourceNodeId) throws IOException {
         // Throwing exception will mean acks are not sent, so only certain exceptions should be thrown
         if (ex instanceof RegistrationRequiredException) {
             throw (RegistrationRequiredException) ex;
@@ -668,24 +670,29 @@ public class DataLoaderService extends AbstractService implements IDataLoaderSer
             throw (RegistrationNotOpenException) ex;
         } else if (ex instanceof ConnectionRejectedException) {
             throw (ConnectionRejectedException) ex;
+        } else if (ex instanceof ConnectionDuplicateException) {
+            throw (ConnectionDuplicateException) ex;
         } else if (ex instanceof ServiceUnavailableException) {
             throw (ServiceUnavailableException) ex;
-        } else if (ex instanceof AuthenticationException) {
-            throw (AuthenticationException) ex;
         } else if (ex instanceof SyncDisabledException) {
             throw (SyncDisabledException) ex;
         } else if (ex instanceof HttpException) {
             throw (HttpException) ex;
         } else if (ex instanceof InvalidRetryException) {
             throw (InvalidRetryException) ex;
+        } else if (ex instanceof AuthenticationException) {
+            throw (AuthenticationException) ex;
+        } else if (ex instanceof AuthenticationExpiredException) {
+            throw (AuthenticationExpiredException) ex;
         } else if (ex instanceof ProtocolException) {
-            log.error("Failed to process batch: {}: {}", ex.getClass().getSimpleName(), ex.getMessage());
+            log.error("Failed to process incoming batch from node '{}': {}{}", sourceNodeId, ex.getClass().getSimpleName(),
+                    StringUtils.isNotBlank(ex.getMessage()) ? ": " + ex.getMessage() : "");
         } else if (ex instanceof StagingLowFreeSpace) {
             log.error("Loading is disabled because disk is almost full: {}", ex.getMessage());
         } else if (!(ex instanceof ConflictException) && !(ex instanceof SqlException) && !(ex instanceof CancellationException)) {
-            log.error("Failed to process batch", ex);
+            log.error("Failed to process incoming batch from node '" + sourceNodeId + "'", ex);
         } else {
-            log.debug("Failed to process batch", ex);
+            log.debug("Failed to process incoming batch from node '" + sourceNodeId + "'", ex);
         }
     }
 

@@ -50,6 +50,8 @@ public interface IStatisticManager {
 
     public void addJobStats(String jobName, long startTime, long endTime, long processedCount, Exception e);
 
+    public void addJobStats(String jobName, long startTime, long endTime, long processedCount, String errorMessage);
+
     public void addJobStats(String targetNodeId, int targetNodeCount, String jobName, long startTime, long endTime, long processedCount);
 
     public void addRouterStats(long startDataId, long endDataId, long dataReadCount, long peekAheadFillCount,
@@ -114,6 +116,12 @@ public interface IStatisticManager {
     public void incrementPurgedDataRows(long count);
 
     public void incrementPurgedDataEventRows(long count);
+
+    public void incrementPurgedStrandedDataRows(long count);
+
+    public void incrementPurgedStrandedDataEventRows(long count);
+
+    public void incrementPurgedExpiredDataRows(long count);
 
     public void incrementTriggersRemovedCount(long count);
 

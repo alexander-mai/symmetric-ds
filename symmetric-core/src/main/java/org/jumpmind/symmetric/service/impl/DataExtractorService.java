@@ -253,7 +253,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                 TriggerRouter triggerRouter = triggerRouters.get(i);
                 TriggerHistory triggerHistory = triggerHistories.get(i);
                 StringBuilder sql = new StringBuilder(symmetricDialect.createPurgeSqlFor(targetNode, triggerRouter, triggerHistory));
-                addPurgeCriteriaToConfigurationTables(triggerRouter.getTrigger().getSourceTableName(), sql);
+                addPurgeCriteriaToConfigurationTables(targetNode, triggerRouter.getTrigger().getSourceTableName(), sql);
                 Data data = new Data(1, null, sql.toString(), DataEventType.SQL, triggerHistory.getSourceTableName(), null, triggerHistory, triggerRouter
                         .getTrigger().getChannelId(), null, null);
                 initialLoadEvents.add(new SelectFromTableEvent(data, triggerRouter));
@@ -300,16 +300,13 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
         }
     }
 
-    private void addPurgeCriteriaToConfigurationTables(String sourceTableName, StringBuilder sql) {
+    private void addPurgeCriteriaToConfigurationTables(Node targetNode, String sourceTableName, StringBuilder sql) {
         if ((TableConstants
                 .getTableName(parameterService.getTablePrefix(), TableConstants.SYM_NODE)
                 .equalsIgnoreCase(sourceTableName))
                 || TableConstants.getTableName(parameterService.getTablePrefix(),
                         TableConstants.SYM_NODE_SECURITY).equalsIgnoreCase(sourceTableName)) {
-            Node me = nodeService.findIdentity();
-            if (me != null) {
-                sql.append(String.format(" where created_at_node_id='%s'", me.getNodeId()));
-            }
+            sql.append(String.format(" where created_at_node_id != '%s' or created_at_node_id is null", targetNode.getNodeId()));
         }
     }
 
@@ -672,7 +669,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                                 resource.delete();
                             }
                         } else {
-                            log.error("Failed to extract batch " + currentBatch, e);
+                            log.error("Failed to extract batch " + currentBatch + " on channel '" + currentBatch.getChannelId() + "'", e);
                         }
                     }
                     try {
@@ -1318,8 +1315,10 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                 char[] buffer = new char[bufferSize];
                 boolean batchStatsWritten = false;
                 String prevBuffer = "";
+                long batchStatusUpdateMillis = parameterService.getLong(ParameterConstants.OUTGOING_BATCH_UPDATE_STATUS_MILLIS);
+                boolean is39orNewer = nodeService.findNode(batch.getNodeId(), true).isVersionGreaterThanOrEqualTo(3, 9, 0);
                 while ((numCharsRead = reader.read(buffer)) != -1) {
-                    if (!batchStatsWritten && nodeService.findNode(batch.getNodeId(), true).isVersionGreaterThanOrEqualTo(3, 9, 0)) {
+                    if (!batchStatsWritten && is39orNewer) {
                         batchStatsWritten = writeBatchStats(writer, buffer, numCharsRead, prevBuffer, batch);
                         prevBuffer = new String(buffer);
                     } else {
@@ -1329,7 +1328,6 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                     if (Thread.currentThread().isInterrupted()) {
                         throw new IoException("This thread was interrupted");
                     }
-                    long batchStatusUpdateMillis = parameterService.getLong(ParameterConstants.OUTGOING_BATCH_UPDATE_STATUS_MILLIS);
                     if (System.currentTimeMillis() - ts > batchStatusUpdateMillis && batch.getStatus() != Status.SE && batch.getStatus() != Status.RS) {
                         changeBatchStatus(Status.SE, batch, mode);
                     }
@@ -1435,7 +1433,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                     outgoingBatch.getBatchId(), outgoingBatch.getNodeId(), outgoingBatch.getLoadId(), engine.getNodeId());
         }
         TableReloadStatus status = dataService.updateTableReloadStatusDataLoaded(transaction,
-                outgoingBatch.getLoadId(), outgoingBatch.getBatchId(), 1, outgoingBatch.isBulkLoaderFlag());
+                outgoingBatch.getLoadId(), engine.getNodeId(), outgoingBatch.getBatchId(), 1, outgoingBatch.isBulkLoaderFlag());
         if (status != null && status.isFullLoad() && (status.isCancelled() || status.isCompleted())) {
             log.info("Initial load ended for node {}", outgoingBatch.getNodeId());
             nodeService.setInitialLoadEnded(transaction, outgoingBatch.getNodeId());
@@ -1600,7 +1598,6 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                 try {
                     List<NodeQueuePair> nodes = getExtractRequestNodes();
                     for (NodeQueuePair pair : nodes) {
-                        clusterService.refreshLock(ClusterConstants.INITIAL_LOAD_EXTRACT);
                         queue(pair.getNodeId(), pair.getQueue(), statuses);
                     }
                 } finally {
@@ -1894,8 +1891,8 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                         .getNodeId());
                 // back out statistics from table reload request
                 if (batchLoadedCount > 0 || rowLoadedCount > 0) {
-                    dataService.updateTableReloadStatusDataLoaded(transaction, extractRequest.getLoadId(), extractRequest.getStartBatchId(),
-                            (int) batchLoadedCount * -1, false);
+                    dataService.updateTableReloadStatusDataLoaded(transaction, extractRequest.getLoadId(), engine.getNodeId(),
+                            extractRequest.getStartBatchId(), (int) batchLoadedCount * -1, false);
                 }
                 // set status of batches back to requested
                 outgoingBatchService.updateOutgoingBatchStatus(transaction, Status.RQ, extractRequest.getNodeId(), extractRequest.getStartBatchId(),
@@ -1942,7 +1939,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
             dataService.sendSQL(extractRequest.getNodeId(), sql);
         }
         for (ExtractRequest extractRequest : allRequests) {
-            TableReloadStatus reloadStatus = dataService.getTableReloadStatusByLoadId(extractRequest.getLoadId());
+            TableReloadStatus reloadStatus = dataService.getTableReloadStatusByLoadIdAndSourceNodeId(extractRequest.getLoadId(), nodeIdentityId);
             OutgoingBatches setupBatches = outgoingBatchService.getOutgoingBatchByLoadRangeAndTable(extractRequest.getLoadId(), 1,
                     reloadStatus.getStartDataBatchId() - 1, extractRequest.getTableName().toLowerCase());
             // clear incoming batch table for all batches at the target node that were used to setup this load for a specific table (delete, truncate, etc)

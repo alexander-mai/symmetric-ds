@@ -27,7 +27,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.commons.lang3.StringUtils;
 import org.jumpmind.db.sql.ISqlTransaction;
 import org.jumpmind.extension.IBuiltInExtensionPoint;
 import org.jumpmind.symmetric.ISymmetricEngine;
@@ -59,6 +58,7 @@ public class ConfigurationChangedDataRouter extends AbstractDataRouter implement
         helper = new ConfigurationChangedHelper(engine);
     }
 
+    @Override
     public Set<String> routeToNodes(SimpleRouterContext routingContext, DataMetaData dataMetaData,
             Set<Node> possibleTargetNodes, boolean initialLoad, boolean initialLoadSelectUsed,
             TriggerRouter triggerRouter) {
@@ -67,22 +67,28 @@ public class ConfigurationChangedDataRouter extends AbstractDataRouter implement
                     engine.getParameterService().is(ParameterConstants.AUTO_SYNC_TRIGGERS_AFTER_CONFIG_CHANGED));
         }
         helper.handleChange(routingContext, dataMetaData.getTable(), dataMetaData.getData());
-        possibleTargetNodes = helper.filterNodes(possibleTargetNodes, dataMetaData.getTable().getNameLowerCase());
         // the list of nodeIds that we will return
         Set<String> nodeIds = new HashSet<String>();
         // the inbound data
-        Map<String, String> columnValues = getDataMap(dataMetaData,
-                engine != null ? engine.getSymmetricDialect() : null);
+        Map<String, String> columnValues = getDataMap(dataMetaData, engine != null ? engine.getSymmetricDialect() : null);
+        possibleTargetNodes = helper.filterNodes(possibleTargetNodes, dataMetaData.getTable().getNameLowerCase(), columnValues);
         Node me = findIdentity();
         if (me != null) {
             NetworkedNode rootNetworkedNode = getRootNetworkNodeFromContext(routingContext);
-            if (tableMatches(dataMetaData, TableConstants.SYM_NODE)
-                    && dataMetaData.getData().getDataEventType() == DataEventType.SQL
-                    && dataMetaData.getData().getParsedData(CsvData.ROW_DATA).length > 1
-                    && dataMetaData.getData().getParsedData(CsvData.ROW_DATA)[0].toUpperCase().contains("TABLE")) {
-                helper.setSyncTriggersNeeded(routingContext);
-                routeNodeTables(nodeIds, columnValues, rootNetworkedNode, me, routingContext,
-                        dataMetaData, possibleTargetNodes, initialLoad);
+            if (tableMatches(dataMetaData, TableConstants.SYM_NODE) && dataMetaData.getData().getDataEventType() == DataEventType.SQL) {
+                if (dataMetaData.getData().getParsedData(CsvData.ROW_DATA).length > 1 && dataMetaData.getData().getParsedData(CsvData.ROW_DATA)[0]
+                        .toUpperCase().contains("TABLE")) {
+                    helper.setSyncTriggersNeeded(routingContext);
+                }
+                IConfigurationService configurationService = engine.getConfigurationService();
+                for (Node routeToNode : possibleTargetNodes) {
+                    if (notRestClient(routeToNode)) {
+                        NodeGroupLink link = configurationService.getNodeGroupLinkFor(me.getNodeGroupId(), routeToNode.getNodeGroupId(), false);
+                        if (initialLoad || (link != null && link.isSyncSqlEnabled())) {
+                            nodeIds.add(routeToNode.getNodeId());
+                        }
+                    }
+                }
             } else if (tableMatches(dataMetaData, TableConstants.SYM_NODE)
                     || tableMatches(dataMetaData, TableConstants.SYM_NODE_SECURITY)
                     || tableMatches(dataMetaData, TableConstants.SYM_NODE_HOST)
@@ -93,7 +99,10 @@ public class ConfigurationChangedDataRouter extends AbstractDataRouter implement
                 routeNodeTables(nodeIds, columnValues, rootNetworkedNode, me, routingContext,
                         dataMetaData, possibleTargetNodes, initialLoad);
             } else if (tableMatches(dataMetaData, TableConstants.SYM_TABLE_RELOAD_REQUEST)
-                    || tableMatches(dataMetaData, TableConstants.SYM_TABLE_RELOAD_STATUS)) {
+                    || tableMatches(dataMetaData, TableConstants.SYM_TABLE_RELOAD_STATUS)
+                    || tableMatches(dataMetaData, TableConstants.SYM_COMPARE_REQUEST)
+                    || tableMatches(dataMetaData, TableConstants.SYM_COMPARE_STATUS)
+                    || tableMatches(dataMetaData, TableConstants.SYM_COMPARE_TABLE_STATUS)) {
                 String sourceNodeId = columnValues.get("SOURCE_NODE_ID");
                 String targetNodeId = columnValues.get("TARGET_NODE_ID");
                 for (Node nodeThatMayBeRoutedTo : possibleTargetNodes) {
@@ -103,7 +112,9 @@ public class ConfigurationChangedDataRouter extends AbstractDataRouter implement
                         nodeIds.add(nodeThatMayBeRoutedTo.getNodeId());
                     }
                 }
-            } else if (tableMatches(dataMetaData, TableConstants.SYM_EXTRACT_REQUEST)) {
+            } else if (tableMatches(dataMetaData, TableConstants.SYM_EXTRACT_REQUEST)
+                    || tableMatches(dataMetaData, TableConstants.SYM_OUTGOING_ERROR)
+                    || tableMatches(dataMetaData, TableConstants.SYM_INCOMING_ERROR)) {
                 String targetNodeId = columnValues.get("NODE_ID");
                 for (Node nodeThatMayBeRoutedTo : possibleTargetNodes) {
                     if (notRestClient(nodeThatMayBeRoutedTo) && nodeThatMayBeRoutedTo.getNodeId().equals(targetNodeId)) {
@@ -207,25 +218,27 @@ public class ConfigurationChangedDataRouter extends AbstractDataRouter implement
         IDataService dataService = engine.getDataService();
         ITriggerRouterService triggerRouterService = engine.getTriggerRouterService();
         List<TriggerHistory> triggerHistories = triggerRouterService.getActiveTriggerHistories(triggerRouter.getTrigger());
-        TriggerHistory triggerHistory = triggerHistories.get(0);
-        ISqlTransaction transaction = null;
-        try {
-            transaction = engine.getDatabasePlatform().getSqlTemplate().startSqlTransaction();
-            for (Node targetNode : targetNodes) {
-                if (!me.getNodeId().equalsIgnoreCase(targetNode.getNodeId()) && notRestClient(targetNode)) {
-                    dataService.insertReloadEvent(transaction, targetNode, triggerRouter, triggerHistory, initialLoadSelect, false, -1l, "configRouter",
-                            Status.NE, 0l);
+        if (triggerHistories.size() > 0) {
+            TriggerHistory triggerHistory = triggerHistories.get(0);
+            ISqlTransaction transaction = null;
+            try {
+                transaction = engine.getDatabasePlatform().getSqlTemplate().startSqlTransaction();
+                for (Node targetNode : targetNodes) {
+                    if (!me.getNodeId().equalsIgnoreCase(targetNode.getNodeId()) && notRestClient(targetNode)) {
+                        dataService.insertReloadEvent(transaction, targetNode, triggerRouter, triggerHistory, initialLoadSelect, false, -1l, "configRouter",
+                                Status.NE, 0l);
+                    }
                 }
-            }
-            transaction.commit();
-        } catch (Exception e) {
-            log.error("Failed to insert reload events for table " + triggerRouter.getTrigger().getSourceTableName(), e);
-            if (transaction != null) {
-                transaction.rollback();
-            }
-        } finally {
-            if (transaction != null) {
-                transaction.close();
+                transaction.commit();
+            } catch (Exception e) {
+                log.error("Failed to insert reload events for table " + triggerRouter.getTrigger().getSourceTableName(), e);
+                if (transaction != null) {
+                    transaction.rollback();
+                }
+            } finally {
+                if (transaction != null) {
+                    transaction.close();
+                }
             }
         }
     }
@@ -237,59 +250,6 @@ public class ConfigurationChangedDataRouter extends AbstractDataRouter implement
             }
         }
         return null;
-    }
-
-    protected Set<Node> filterOutNodesByDeploymentType(DataMetaData dataMetaData, Set<Node> possibleTargetNodes) {
-        if (tableMatches(dataMetaData, TableConstants.SYM_CONSOLE_USER)
-                || tableMatches(dataMetaData, TableConstants.SYM_CONSOLE_USER_HIST)
-                || tableMatches(dataMetaData, TableConstants.SYM_CONSOLE_ROLE)
-                || tableMatches(dataMetaData, TableConstants.SYM_CONSOLE_ROLE_PRIVILEGE)
-                || tableMatches(dataMetaData, TableConstants.SYM_DESIGN_DIAGRAM)
-                || tableMatches(dataMetaData, TableConstants.SYM_DIAGRAM_GROUP)) {
-            Set<Node> targetNodes = new HashSet<Node>(possibleTargetNodes.size());
-            for (Node nodeThatMayBeRoutedTo : possibleTargetNodes) {
-                boolean isTargetProfessional = StringUtils.equals(nodeThatMayBeRoutedTo.getDeploymentType(),
-                        Constants.DEPLOYMENT_TYPE_PROFESSIONAL);
-                if (isTargetProfessional) {
-                    targetNodes.add(nodeThatMayBeRoutedTo);
-                }
-            }
-            return targetNodes;
-        } else {
-            return possibleTargetNodes;
-        }
-    }
-
-    protected Set<Node> filterOutOlderNodes(DataMetaData dataMetaData, Set<Node> possibleTargetNodes) {
-        if (tableMatches(dataMetaData, TableConstants.SYM_MONITOR)
-                || tableMatches(dataMetaData, TableConstants.SYM_MONITOR_EVENT)
-                || tableMatches(dataMetaData, TableConstants.SYM_NOTIFICATION)
-                || tableMatches(dataMetaData, TableConstants.SYM_JOB)
-                || tableMatches(dataMetaData, TableConstants.SYM_CONSOLE_ROLE)
-                || tableMatches(dataMetaData, TableConstants.SYM_CONSOLE_ROLE_PRIVILEGE)
-                || tableMatches(dataMetaData, TableConstants.SYM_DIAGRAM_GROUP)
-                || tableMatches(dataMetaData, TableConstants.SYM_DESIGN_DIAGRAM)) {
-            Set<Node> targetNodes = new HashSet<Node>(possibleTargetNodes.size());
-            for (Node nodeThatMayBeRoutedTo : possibleTargetNodes) {
-                if (tableMatches(dataMetaData, TableConstants.SYM_JOB)) {
-                    if (nodeThatMayBeRoutedTo.isVersionGreaterThanOrEqualTo(3, 9, 0)) {
-                        targetNodes.add(nodeThatMayBeRoutedTo);
-                    }
-                } else if (tableMatches(dataMetaData, TableConstants.SYM_CONSOLE_ROLE)
-                        || tableMatches(dataMetaData, TableConstants.SYM_CONSOLE_ROLE_PRIVILEGE)
-                        || tableMatches(dataMetaData, TableConstants.SYM_DIAGRAM_GROUP)
-                        || tableMatches(dataMetaData, TableConstants.SYM_DESIGN_DIAGRAM)) {
-                    if (nodeThatMayBeRoutedTo.isVersionGreaterThanOrEqualTo(3, 12, 0)) {
-                        targetNodes.add(nodeThatMayBeRoutedTo);
-                    }
-                } else if (nodeThatMayBeRoutedTo.isVersionGreaterThanOrEqualTo(3, 8, 0)) {
-                    targetNodes.add(nodeThatMayBeRoutedTo);
-                }
-            }
-            return targetNodes;
-        } else {
-            return possibleTargetNodes;
-        }
     }
 
     protected void routeNodeTables(Set<String> nodeIds, Map<String, String> columnValues,
@@ -450,6 +410,11 @@ public class ConfigurationChangedDataRouter extends AbstractDataRouter implement
 
     @Override
     public boolean isConfigurable() {
+        return false;
+    }
+
+    @Override
+    public boolean isDmlOnly() {
         return false;
     }
 }

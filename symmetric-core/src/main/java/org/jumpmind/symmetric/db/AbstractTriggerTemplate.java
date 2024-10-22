@@ -68,6 +68,7 @@ abstract public class AbstractTriggerTemplate {
     protected String xmlColumnTemplate;
     protected String arrayColumnTemplate;
     protected String numberColumnTemplate;
+    protected String moneyColumnTemplate;
     protected String datetimeColumnTemplate;
     protected String timeColumnTemplate;
     protected String dateColumnTemplate;
@@ -89,6 +90,7 @@ abstract public class AbstractTriggerTemplate {
     protected String newColumnPrefix = "";
     protected String otherColumnTemplate;
     protected ISymmetricDialect symmetricDialect;
+    protected int hashedValue = 0;
 
     protected AbstractTriggerTemplate(ISymmetricDialect symmetricDialect) {
         this.symmetricDialect = symmetricDialect;
@@ -109,6 +111,14 @@ abstract public class AbstractTriggerTemplate {
      */
     protected boolean useTriggerTemplateForColumnTemplatesDuringInitialLoad(Column column) {
         if (!useTriggerTemplateForColumnTemplatesDuringInitialLoad() && column != null) {
+            int mappedType = column.getMappedTypeCode();
+            if (mappedType == ColumnTypes.TIMESTAMPTZ || mappedType == ColumnTypes.TIMESTAMPLTZ || mappedType == ColumnTypes.TIMETZ) {
+                return true;
+            }
+            String typeName = column.getJdbcTypeName();
+            if (typeName != null && (typeName.equalsIgnoreCase("unichar") || typeName.equalsIgnoreCase("univarchar") || typeName.equalsIgnoreCase("unitext"))) {
+                return true;
+            }
             int type = column.getJdbcTypeCode();
             // These column types can be selected directly without a template
             if (type == Types.CHAR || type == Types.NCHAR || type == Types.VARCHAR || type == ColumnTypes.NVARCHAR
@@ -157,7 +167,7 @@ abstract public class AbstractTriggerTemplate {
                         columnList.append(",");
                     }
                     String columnExpression = null;
-                    if (useTriggerTemplateForColumnTemplatesDuringInitialLoad(column)) {
+                    if (useTriggerTemplateForColumnTemplatesDuringInitialLoad(column) && (!isUniTextColumn(column))) {
                         ColumnString columnString = fillOutColumnTemplate(tableAlias,
                                 tableAlias, "", table, column, DataEventType.INSERT, false, channel,
                                 triggerRouter.getTrigger(), true);
@@ -209,6 +219,10 @@ abstract public class AbstractTriggerTemplate {
                 triggerRouter.getTrigger().isUseCaptureLobs() ? toClobExpression(table) : "", sql);
         sql = replaceOracleQueryHint(sql);
         return sql;
+    }
+
+    public boolean isUniTextColumn(Column column) {
+        return column.getJdbcTypeName() == null ? false : column.getJdbcTypeName().equalsIgnoreCase("unitext");
     }
 
     public boolean[] getColumnPositionUsingTemplate(Table originalTable, TriggerHistory triggerHistory) {
@@ -426,7 +440,7 @@ abstract public class AbstractTriggerTemplate {
         // We are replacing this template variable with other template variables
         // Only replace this special variable with a template variable for the following combined case
         // Otherwise, just replace with $(channelExpression) and let normal template variable replacement do its thing.
-        if (trigger.getChannelId() == Constants.CHANNEL_DYNAMIC && dml.getDmlType() == DmlType.UPDATE
+        if (trigger.getChannelId().equals(Constants.CHANNEL_DYNAMIC) && dml.getDmlType() == DmlType.UPDATE
                 && TableConstants.getTableName(tablePrefix, TableConstants.SYM_FILE_SNAPSHOT).equals(table.getName())) {
             ddl = FormatUtils.replace("specialSqlServerSybaseChannelExpression", "$(oldTriggerValue).$(oldColumnPrefix)" + symmetricDialect.getPlatform()
                     .alterCaseToMatchDatabaseDefaultCase("channel_id"), ddl);
@@ -547,6 +561,10 @@ abstract public class AbstractTriggerTemplate {
         ddl = FormatUtils.replace(
                 "tableNewPrimaryKeyJoin",
                 aliasedPrimaryKeyJoin(ORIG_TABLE_ALIAS, newTriggerValue,
+                        primaryKeyColumns.length == 0 ? orderedColumns : primaryKeyColumns), ddl);
+        ddl = FormatUtils.replace(
+                "tableNewPrimaryKeyJoinByTableName",
+                aliasedPrimaryKeyJoin(SymmetricUtils.quote(symmetricDialect, table.getName()), newTriggerValue,
                         primaryKeyColumns.length == 0 ? orderedColumns : primaryKeyColumns), ddl);
         ddl = FormatUtils.replace(
                 "primaryKeyWhereString",
@@ -699,31 +717,57 @@ abstract public class AbstractTriggerTemplate {
         return ddl;
     }
 
+    /***
+     * Builds join with all primary key columns pairs prefixed by the new and old aliases.
+     */
     protected String aliasedPrimaryKeyJoin(String aliasOne, String aliasTwo, Column[] columns) {
         StringBuilder b = new StringBuilder();
-        boolean isFirst = true;
-        for (Column column : columns) {
-            if (isFirst) {
-                isFirst = false;
-            } else {
+        for (int columnNo = 0; columnNo < columns.length; columnNo++) {
+            Column column = columns[columnNo];
+            String quotedColumnName = SymmetricUtils.quote(symmetricDialect, column.getName());
+            if (columnNo > 0) {
                 b.append(" and ");
             }
-            b.append(aliasOne).append(".\"").append(column.getName()).append("\"");
-            b.append("=").append(aliasTwo).append(".\"").append(column.getName()).append("\"");
+            if (!column.isRequired()) {
+                b.append("(");
+            }
+            b.append(aliasOne).append(".").append(quotedColumnName);
+            b.append("=").append(aliasTwo).append(".").append(quotedColumnName);
+            if (!column.isRequired()) {
+                b.append(" or (");
+                b.append(aliasOne).append(".").append(quotedColumnName).append(" is null");
+                b.append(" and ");
+                b.append(aliasTwo).append(".").append(quotedColumnName).append(" is null))");
+            }
         }
         return b.toString();
     }
 
+    /***
+     * Builds join with all primary key columns paired with prefixed parameter values.
+     */
     protected String aliasedPrimaryKeyJoinVar(String alias, String prefix, Column[] columns) {
-        String text = "";
-        for (int i = 0; i < columns.length; i++) {
-            text += alias + ".\"" + columns[i].getName() + "\"";
-            text += "=@" + prefix + "pk" + i;
-            if (i + 1 < columns.length) {
-                text += " and ";
+        StringBuilder b = new StringBuilder();
+        for (int columnNo = 0; columnNo < columns.length; columnNo++) {
+            Column column = columns[columnNo];
+            String quotedColumnName = SymmetricUtils.quote(symmetricDialect, column.getName());
+            String paramName = String.format("@%spk%d", prefix, columnNo);
+            if (columnNo > 0) {
+                b.append(" and ");
+            }
+            if (!column.isRequired()) {
+                b.append("(");
+            }
+            b.append(alias).append(".").append(quotedColumnName);
+            b.append("=").append(paramName);
+            if (!column.isRequired()) {
+                b.append(" or (");
+                b.append(alias).append(".").append(quotedColumnName).append(" is null");
+                b.append(" and ");
+                b.append(paramName).append(" is null))");
             }
         }
-        return text;
+        return b.toString();
     }
 
     /**
@@ -815,6 +859,9 @@ abstract public class AbstractTriggerTemplate {
                 case Types.NUMERIC:
                 case Types.DECIMAL:
                     templateToUse = numberColumnTemplate;
+                    if (moneyColumnTemplate != null && column.getJdbcTypeName() != null && column.getJdbcTypeName().toUpperCase().contains("MONEY")) {
+                        templateToUse = moneyColumnTemplate;
+                    }
                     break;
                 case Types.CHAR:
                 case Types.NCHAR:
@@ -1135,8 +1182,7 @@ abstract public class AbstractTriggerTemplate {
     }
 
     public int toHashedValue() {
-        int hashedValue = 0;
-        if (sqlTemplates != null) {
+        if (hashedValue == 0 && sqlTemplates != null) {
             for (String key : sqlTemplates.keySet()) {
                 hashedValue += sqlTemplates.get(key).hashCode();
             }
@@ -1177,7 +1223,7 @@ abstract public class AbstractTriggerTemplate {
             } else {
                 sb.append("(");
             }
-            sb.append(" UPDATE(\"").append(primaryKey).append("\") ");
+            sb.append(" UPDATE(").append(SymmetricUtils.quote(symmetricDialect, primaryKey)).append(") ");
         }
         if (sb.length() > 0) {
             sb.append(")");

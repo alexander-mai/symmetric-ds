@@ -1,9 +1,40 @@
 
 ==== Transform Types
 
-There are several pre-defined transform types available in SymmetricDS. Additional ones can be 
-defined by creating and configuring an extension point which implements the IColumnTransform interface. 
-The pre-defined transform types include the following:
+There are several pre-defined transform types. Additional ones can be 
+defined by creating and configuring an extension point which implements the IColumnTransform interface.
+
+.Transform Types
+[cols="10%,90%", options="header"]
+|===
+|Type|Description
+
+|<<Additive Transform,additive>>|For numeric fields, apply the difference of new minus old to the target.
+Calculate the difference between the old and new source number and apply the difference to the target.
+|<<BeanShell Script Transform,bsh>>|Run a BeanShell script to return a value.
+|<<BLeft Transform,bleft>>|Copy the leftmost bytes of the value.
+|<<Clarion Date Time,clarionDateTime>>|Convert a source column with a Clarion integer into a timestamp.
+|<<Constant Transform,const>>|Use a provided constant value.
+|<<Copy Transform,copy>>|Copy source column value to the target column.
+|<<Copy If Changed,copyIfChanged>>|Copy the source column value only if its old and new value are different.
+|<<Columns To Rows,columnsToRowsKey>>|Convert columns to rows, specifying which columns are the key for all rows.
+|<<Columns To Rows,columnsToRowsValue>>|Convert column to rows, specifying which columns are the changing values.
+|<<Deleted Columns Transform,deletedColumns>>|Comma-separated list of column names that were changed to null.
+|<<Identity Transform,identity>>|Set INSERT_IDENTITY to ON for generating the next identity value.
+|<<isBlank Transform,isBlank>>|If value is empty after trimming spaces, then replace its value.
+|<<isEmpty Transform,isEmpty>>|If value is empty, then replace its value.
+|<<Java Transform,java>>|Run Java code to return a value.
+|<<Null Value Transform,isNull>>|If value is null, then replace its value.
+|<<Left Transform,left>>|Copy the leftmost characters of the value.
+|<<Lookup Transform,lookup>>|Run a SQL query to return a value.
+|<<Mathematical Transform,math>>|Perform a math expression.
+|<<Multiply Transform,multiply>>|Run a SQL query with the primary key to create multiple rows.
+|<<Remove Transform,remove>>|Remove the column from the row.
+|<<Substring Transform,substring>>|Copy a substring of the value.
+|<<Value Map Transform,valueMap>>|Map from one literal value to another.
+|<<Variable Transform,variable>>|Use a built-in variable value.
+
+|===
 
 ===== Copy Transform
 
@@ -97,14 +128,21 @@ The variable name is placed in transform expression. The following variables are
 .Variables
 |===
 
+|batch_id|Batch number
+|batch_start_time|Timestamp of when the batch started to process
+|delete_indicator_flag|Whether or not this is a delete event, in format of Y or N.
+|null|null value
+|old_column_value|column's old value prior to the DML operation.
+|source_catalog_name|Catalog name of source table
+|source_dml_type|Event type, usually one of INSERT, UPDATE, or DELETE, but possibly one of RELOAD, SQL, CREATE, or BSH. 
+|source_node_id|node id of the source (from the batch)
+|source_node_id_from_data|source_node_id value from sym_data (source of a captured synchronization data change)
+|source_schema_name|Schema name of the source table
+|source_table_name|Name of the source table
 |system_date|current system date
 |system_timestamp|current system date and time using default timezone
 |system_timestamp_utc|current system date and time using UTC timezone
-|source_node_id|node id of the source (from the batch)
 |target_node_id|node id of the target (from the batch)
-|source_node_id_from_data|source_node_id value from sym_data (source of a captured synchronization data change)
-|null|null value 
-|old_column_value|column's old value prior to the DML operation.
 
 |===
 
@@ -286,7 +324,7 @@ if (currentValue > oldValue) {
 
 ----
 if (currentValue != null && currentValue.length() == 0) { 
-	return org.jumpmind.symmetric.io.data.transform.NewAndOldValue(null, oldValue);
+	return new org.jumpmind.symmetric.io.data.transform.NewAndOldValue(null, oldValue);
 } else { 
 	return currentValue;
 }

@@ -83,6 +83,7 @@ import org.jumpmind.db.sql.IConnectionCallback;
 import org.jumpmind.db.sql.IConnectionHandler;
 import org.jumpmind.db.sql.ISqlTransaction;
 import org.jumpmind.db.sql.JdbcSqlTemplate;
+import org.jumpmind.db.sql.JdbcSqlTransaction;
 import org.jumpmind.db.sql.Row;
 import org.jumpmind.db.sql.SqlException;
 import org.jumpmind.db.sql.mapper.RowMapper;
@@ -530,34 +531,10 @@ public abstract class AbstractJdbcDdlReader implements IDdlReader {
     @Override
     public Table readTable(final String catalog, final String schema, final String table) {
         try {
-            log.debug("reading table: " + table);
             JdbcSqlTemplate sqlTemplate = (JdbcSqlTemplate) platform.getSqlTemplateDirty();
             return postprocessTableFromDatabase(sqlTemplate.execute(new IConnectionCallback<Table>() {
                 public Table execute(Connection connection) throws SQLException {
-                    DatabaseMetaDataWrapper metaData = new DatabaseMetaDataWrapper();
-                    metaData.setMetaData(connection.getMetaData());
-                    if (isNotBlank(catalog)) {
-                        metaData.setCatalog(catalog);
-                    }
-                    if (isNotBlank(schema)) {
-                        metaData.setSchemaPattern(schema);
-                    }
-                    metaData.setTableTypes(null);
-                    ResultSet tableData = null;
-                    try {
-                        log.debug("getting table metadata for {}", table);
-                        tableData = metaData.getTables(getTableNamePattern(table));
-                        log.debug("done getting table metadata for {}", table);
-                        if (tableData != null && tableData.next()) {
-                            Map<String, Object> values = readMetaData(tableData, initColumnsForTable());
-                            return readTable(connection, metaData, values);
-                        } else {
-                            log.debug("table {} not found", table);
-                            return null;
-                        }
-                    } finally {
-                        close(tableData);
-                    }
+                    return readTableFromConnection(connection, catalog, schema, table);
                 }
             }));
         } catch (SqlException e) {
@@ -568,6 +545,58 @@ public abstract class AbstractJdbcDdlReader implements IDdlReader {
                         .getMessage());
                 throw e;
             }
+        }
+    }
+
+    @Override
+    public Table readTable(ISqlTransaction transaction, final String catalog, final String schema, final String table) {
+        try {
+            log.debug("reading table {}", table);
+            if (transaction instanceof JdbcSqlTransaction) {
+                return postprocessTableFromDatabase(((JdbcSqlTransaction) transaction).executeCallback(new IConnectionCallback<Table>() {
+                    public Table execute(Connection connection) throws SQLException {
+                        return readTableFromConnection(connection, catalog, schema, table);
+                    }
+                }));
+            } else {
+                return readTable(catalog, schema, table);
+            }
+        } catch (SqlException e) {
+            if (e.getMessage() != null && StringUtils.containsIgnoreCase(e.getMessage(), "does not exist")) {
+                return null;
+            } else {
+                log.error("Failed to get metadata for {} because: {} {}", Table.getFullyQualifiedTableName(catalog, schema, table), e.getClass().getName(), e
+                        .getMessage());
+                throw e;
+            }
+        }
+    }
+
+    protected Table readTableFromConnection(Connection connection, final String catalog, final String schema, final String table) throws SQLException {
+        log.debug("reading table {}", table);
+        DatabaseMetaDataWrapper metaData = new DatabaseMetaDataWrapper();
+        metaData.setMetaData(connection.getMetaData());
+        if (isNotBlank(catalog)) {
+            metaData.setCatalog(catalog);
+        }
+        if (isNotBlank(schema)) {
+            metaData.setSchemaPattern(schema);
+        }
+        metaData.setTableTypes(null);
+        ResultSet rs = null;
+        try {
+            log.debug("getting table metadata for {}", table);
+            rs = metaData.getTables(getTableNamePattern(table));
+            log.debug("done getting table metadata for {}", table);
+            if (rs != null && rs.next()) {
+                Map<String, Object> values = readMetaData(rs, initColumnsForTable());
+                return readTable(connection, metaData, values);
+            } else {
+                log.debug("table {} not found", table);
+                return null;
+            }
+        } finally {
+            close(rs);
         }
     }
 
@@ -1305,7 +1334,7 @@ public abstract class AbstractJdbcDdlReader implements IDdlReader {
             if (table.getSchema() != null && !table.getSchema().trim().equals("")) {
                 appendIdentifier(query, table.getSchema()).append(".");
             }
-            appendIdentifier(query, table.getName()).append(" t WHERE 1 = 0");
+            appendIdentifier(query, table.getName()).append(" t " + getWithNoLockHint() + " WHERE 1 = 0");
             Statement stmt = null;
             try {
                 stmt = conn.createStatement();
@@ -1347,6 +1376,10 @@ public abstract class AbstractJdbcDdlReader implements IDdlReader {
             }
             log.warn(msg.toString(), ex);
         }
+    }
+
+    protected String getWithNoLockHint() {
+        return "";
     }
 
     protected StringBuilder appendIdentifier(StringBuilder query, String identifier) {
@@ -1444,7 +1477,6 @@ public abstract class AbstractJdbcDdlReader implements IDdlReader {
         JdbcSqlTemplate sqlTemplate = (JdbcSqlTemplate) platform.getSqlTemplateDirty();
         return sqlTemplate.execute(new IConnectionCallback<List<String>>() {
             public List<String> execute(Connection connection) throws SQLException {
-                ArrayList<String> schemas = new ArrayList<String>();
                 IConnectionHandler connectionHandler = getConnectionHandler(catalog);
                 if (connectionHandler != null) {
                     connectionHandler.before(connection);
@@ -1454,24 +1486,13 @@ public abstract class AbstractJdbcDdlReader implements IDdlReader {
                 try {
                     try {
                         rs = meta.getSchemas();
+                        return processSchemaResultSet(rs, catalog);
                     } catch (SQLException e) {
-                        rs = meta.getSchemas("", null);
+                        close(rs);
+                        rs = null;
+                        rs = getSchemasHandleException(connection, meta, "", null);
+                        return processSchemaResultSet(rs, catalog);
                     }
-                    while (rs.next()) {
-                        int columnCount = rs.getMetaData().getColumnCount();
-                        String schema = rs.getString(1);
-                        String schemaCatalog = null;
-                        if (columnCount > 1) {
-                            schemaCatalog = rs.getString(2);
-                        }
-                        if ((StringUtils.isBlank(schemaCatalog) || StringUtils.isBlank(catalog)) && !schemas.contains(schema)) {
-                            schemas.add(schema);
-                        } else if (StringUtils.isNotBlank(schemaCatalog)
-                                && schemaCatalog.equals(catalog)) {
-                            schemas.add(schema);
-                        }
-                    }
-                    return schemas;
                 } finally {
                     if (connectionHandler != null) {
                         connectionHandler.after(connection);
@@ -1480,6 +1501,29 @@ public abstract class AbstractJdbcDdlReader implements IDdlReader {
                 }
             }
         });
+    }
+
+    protected ArrayList<String> processSchemaResultSet(ResultSet rs, String catalog) throws SQLException {
+        ArrayList<String> schemas = new ArrayList<String>();
+        while (rs.next()) {
+            int columnCount = rs.getMetaData().getColumnCount();
+            String schema = rs.getString(1);
+            String schemaCatalog = null;
+            if (columnCount > 1) {
+                schemaCatalog = rs.getString(2);
+            }
+            if ((StringUtils.isBlank(schemaCatalog) || StringUtils.isBlank(catalog)) && !schemas.contains(schema)) {
+                schemas.add(schema);
+            } else if (StringUtils.isNotBlank(schemaCatalog)
+                    && schemaCatalog.equals(catalog)) {
+                schemas.add(schema);
+            }
+        }
+        return schemas;
+    }
+
+    protected ResultSet getSchemasHandleException(Connection connection, DatabaseMetaData meta, String catalog, String schemaPattern) throws SQLException {
+        return meta.getSchemas(catalog, schemaPattern);
     }
 
     protected IConnectionHandler getConnectionHandler(String catalog) {
@@ -1603,9 +1647,7 @@ public abstract class AbstractJdbcDdlReader implements IDdlReader {
                                 DmlStatement selectSt = platform.createDmlStatement(DmlType.SELECT, foreignTable.getCatalog(),
                                         foreignTable.getSchema(), foreignTable.getName(), keyColumns,
                                         foreignTable.getColumns(), nullValues, null);
-                                Object[] selectValues = platform.getObjectValues(encoding, selectRow.toStringArray(selectRow.keySet().toArray(new String[0])),
-                                        keyColumns);
-                                List<Row> rows = transaction.query(selectSt.getSql(), new RowMapper(), selectValues, selectSt.getTypes());
+                                List<Row> rows = transaction.query(selectSt.getSql(), new RowMapper(), selectRow.toArray(), selectSt.getTypes());
                                 if (rows != null) {
                                     for (Row row : rows) {
                                         DmlStatement whereSt = null;

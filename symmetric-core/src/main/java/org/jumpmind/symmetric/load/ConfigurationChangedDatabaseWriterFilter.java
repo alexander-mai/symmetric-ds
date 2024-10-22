@@ -118,10 +118,6 @@ public class ConfigurationChangedDatabaseWriterFilter extends DatabaseWriterFilt
 
     @Override
     public void afterWrite(DataContext context, Table table, CsvData data) {
-        if (!matchesTablePrefix) {
-            return;
-        }
-        helper.handleChange(context, table, data);
         if (data.getDataEventType() == DataEventType.CREATE) {
             @SuppressWarnings("unchecked")
             Set<Table> tables = (Set<Table>) context.get(CTX_KEY_RESYNC_TABLE_NEEDED);
@@ -131,6 +127,10 @@ public class ConfigurationChangedDatabaseWriterFilter extends DatabaseWriterFilt
             }
             tables.add(table);
         }
+        if (!matchesTablePrefix) {
+            return;
+        }
+        helper.handleChange(context, table, data);
         if (matchesTable(table, TableConstants.SYM_NODE_SECURITY) && data.getDataEventType() == DataEventType.UPDATE) {
             Map<String, String> newData = data.toColumnNameValuePairs(table.getColumnNames(), CsvData.ROW_DATA);
             String initialLoadEnabled = newData.get("INITIAL_LOAD_ENABLED");
@@ -232,8 +232,8 @@ public class ConfigurationChangedDatabaseWriterFilter extends DatabaseWriterFilt
         String identityId = (String) context.get(CTX_KEY_MY_NODE_ID);
         if (loadIds != null && identityId != null) {
             for (Long loadId : loadIds) {
-                TableReloadStatus status = engine.getDataService().getTableReloadStatusByLoadId(loadId);
-                if (status != null && identityId.equals(status.getSourceNodeId())) {
+                TableReloadStatus status = engine.getDataService().getTableReloadStatusByLoadIdAndSourceNodeId(loadId, identityId);
+                if (status != null) {
                     engine.getInitialLoadService().cancelLoad(status);
                 }
             }

@@ -28,9 +28,11 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
@@ -59,11 +61,16 @@ import org.jumpmind.symmetric.model.DataGap;
 import org.jumpmind.symmetric.model.DataMetaData;
 import org.jumpmind.symmetric.model.Node;
 import org.jumpmind.symmetric.model.NodeChannel;
+import org.jumpmind.symmetric.model.NodeCommunication;
+import org.jumpmind.symmetric.model.NodeCommunication.CommunicationType;
+import org.jumpmind.symmetric.model.ProcessInfo.ProcessStatus;
 import org.jumpmind.symmetric.model.NodeGroupLink;
 import org.jumpmind.symmetric.model.OutgoingBatch;
 import org.jumpmind.symmetric.model.ProcessInfo;
 import org.jumpmind.symmetric.model.ProcessInfoKey;
 import org.jumpmind.symmetric.model.ProcessType;
+import org.jumpmind.symmetric.model.RemoteNodeStatus;
+import org.jumpmind.symmetric.model.RemoteNodeStatuses;
 import org.jumpmind.symmetric.model.Router;
 import org.jumpmind.symmetric.model.Trigger;
 import org.jumpmind.symmetric.model.TriggerHistory;
@@ -98,6 +105,8 @@ import org.jumpmind.symmetric.route.TPSRouter;
 import org.jumpmind.symmetric.route.TransactionalBatchAlgorithm;
 import org.jumpmind.symmetric.service.ClusterConstants;
 import org.jumpmind.symmetric.service.IExtensionService;
+import org.jumpmind.symmetric.service.INodeCommunicationService;
+import org.jumpmind.symmetric.service.INodeCommunicationService.INodeCommunicationExecutor;
 import org.jumpmind.symmetric.service.IRouterService;
 import org.jumpmind.symmetric.statistic.StatisticConstants;
 import org.jumpmind.symmetric.util.CounterStat;
@@ -106,23 +115,25 @@ import org.jumpmind.util.FormatUtils;
 /**
  * @see IRouterService
  */
-public class RouterService extends AbstractService implements IRouterService {
+public class RouterService extends AbstractService implements IRouterService, INodeCommunicationExecutor {
     final int MAX_LOGGING_LENGTH = 512;
-    protected Map<Integer, CounterStat> missingTriggerRouter = new HashMap<Integer, CounterStat>();
-    protected Map<String, CounterStat> invalidRouterType = new HashMap<String, CounterStat>();
-    protected Map<Integer, CounterStat> missingColumns = new HashMap<Integer, CounterStat>();
+    protected Map<Integer, CounterStat> missingTriggerRouter = new ConcurrentHashMap<Integer, CounterStat>();
+    protected Map<String, CounterStat> invalidRouterType = new ConcurrentHashMap<String, CounterStat>();
+    protected Map<Integer, CounterStat> missingColumns = new ConcurrentHashMap<Integer, CounterStat>();
     protected long triggerRouterCacheTime = 0;
-    protected Map<String, Boolean> commonBatchesLastKnownState = new HashMap<String, Boolean>();
+    protected Map<String, Boolean> commonBatchesLastKnownState = new ConcurrentHashMap<String, Boolean>();
     protected long commonBatchesCacheTime;
-    protected Map<String, Boolean> defaultRouterOnlyLastKnownState = new HashMap<String, Boolean>();
+    protected Map<String, Boolean> defaultRouterOnlyLastKnownState = new ConcurrentHashMap<String, Boolean>();
     protected long defaultRoutersCacheTime;
+    protected Map<String, Boolean> isAllDataReadByChannel = new ConcurrentHashMap<String, Boolean>();
+    protected Map<String, Boolean> hasMaxDataRoutedByChannel = new ConcurrentHashMap<String, Boolean>();
     protected transient ExecutorService readThread = null;
     protected ISymmetricEngine engine;
     protected IExtensionService extensionService;
     protected DataGapDetector gapDetector;
     protected boolean firstTimeCheck = true;
-    protected boolean hasMaxDataRoutedOnChannel;
     protected boolean isUsingTargetExternalId;
+    protected boolean useChannelThreading;
 
     public RouterService(ISymmetricEngine engine) {
         super(engine.getParameterService(), engine.getSymmetricDialect());
@@ -138,8 +149,7 @@ public class RouterService extends AbstractService implements IRouterService {
         extensionService.addExtensionPoint("lookuptable", new LookupTableDataRouter(symmetricDialect));
         extensionService.addExtensionPoint("default", new DefaultDataRouter());
         extensionService.addExtensionPoint("audit", new AuditTableDataRouter(engine));
-        extensionService.addExtensionPoint("column", new ColumnMatchDataRouter(engine.getConfigurationService(),
-                engine.getSymmetricDialect()));
+        extensionService.addExtensionPoint("column", new ColumnMatchDataRouter(engine));
         extensionService.addExtensionPoint(FileSyncDataRouter.ROUTER_TYPE, new FileSyncDataRouter(engine));
         extensionService.addExtensionPoint("dbf", new DBFRouter(engine));
         extensionService.addExtensionPoint("tps", new TPSRouter(engine));
@@ -148,7 +158,7 @@ public class RouterService extends AbstractService implements IRouterService {
         setSqlMap(new RouterServiceSqlMap(symmetricDialect.getPlatform(),
                 createSqlReplacementTokens()));
         gapDetector = new DataGapFastDetector(engine.getDataService(), parameterService, engine.getContextService(),
-                symmetricDialect, this, engine.getStatisticManager(), engine.getNodeService());
+                symmetricDialect, this, engine.getStatisticManager(), engine.getNodeService(), engine.getClusterService());
     }
 
     /**
@@ -156,7 +166,7 @@ public class RouterService extends AbstractService implements IRouterService {
      */
     public boolean shouldDataBeRouted(SimpleRouterContext context, DataMetaData dataMetaData,
             Node node, boolean initialLoad, boolean initialLoadSelectUsed, TriggerRouter triggerRouter) {
-        IDataRouter router = getDataRouter(dataMetaData.getRouter());
+        IDataRouter router = getDataRouter(dataMetaData.getRouter(), dataMetaData);
         Set<Node> oneNodeSet = new HashSet<Node>(1);
         oneNodeSet.add(node);
         Collection<String> nodeIds = router.routeToNodes(context, dataMetaData, oneNodeSet, initialLoad,
@@ -191,17 +201,23 @@ public class RouterService extends AbstractService implements IRouterService {
                 long startTime = System.currentTimeMillis();
                 try {
                     if (firstTimeCheck) {
+                        ProcessInfo processInfo = engine.getStatisticManager().newProcessInfo(new ProcessInfoKey(
+                                identity.getNodeId(), null, ProcessType.GAP_DETECT));
+                        processInfo.setStatus(ProcessStatus.QUERYING);
                         engine.getOutgoingBatchService().updateAbandonedRoutingBatches();
                         if (engine.getDataService().fixLastDataGap()) {
                             engine.getContextService().save(ContextConstants.ROUTING_FULL_GAP_ANALYSIS, Boolean.TRUE.toString());
                         }
                         firstTimeCheck = false;
+                        engine.getClusterService().refreshLock(ClusterConstants.ROUTE);
+                        processInfo.setStatus(ProcessStatus.OK);
                     }
                     do {
-                        engine.getClusterService().refreshLock(ClusterConstants.ROUTE);
                         long ts = System.currentTimeMillis();
-                        hasMaxDataRoutedOnChannel = false;
+                        isAllDataReadByChannel.clear();
+                        hasMaxDataRoutedByChannel.clear();
                         isUsingTargetExternalId = engine.getCacheManager().isUsingTargetExternalId(false);
+                        useChannelThreading = parameterService.is(ParameterConstants.ROUTING_USE_CHANNEL_THREADS);
                         gapDetector.beforeRouting();
                         dataCount = routeDataForEachChannel();
                         ts = System.currentTimeMillis() - ts;
@@ -211,13 +227,16 @@ public class RouterService extends AbstractService implements IRouterService {
                         if (dataCount > 0) {
                             gapDetector.afterRouting();
                         }
-                        if (hasMaxDataRoutedOnChannel) {
-                            log.debug("Immediately routing again because a channel reached max data to route");
+                        if (hasMaxDataRouted()) {
+                            log.info("Immediately routing again because a channel reached max data to route");
                         }
-                    } while (hasMaxDataRoutedOnChannel);
+                    } while (hasMaxDataRouted());
                     if (dataCount > 0) {
                         engine.getStatisticManager().addJobStats(ClusterConstants.ROUTE, startTime, System.currentTimeMillis(), dataCount);
                     }
+                } catch (org.jumpmind.exception.InterruptedException e) {
+                    engine.getStatisticManager().addJobStats(ClusterConstants.ROUTE, startTime, System.currentTimeMillis(), dataCount, e);
+                    log.warn("Interrupted");
                 } catch (RuntimeException e) {
                     engine.getStatisticManager().addJobStats(ClusterConstants.ROUTE, startTime, System.currentTimeMillis(), dataCount, e);
                     throw e;
@@ -264,24 +283,81 @@ public class RouterService extends AbstractService implements IRouterService {
                 new ProcessInfoKey(sourceNode.getNodeId(), null, ProcessType.ROUTER_JOB));
         processInfo.setStatus(ProcessInfo.ProcessStatus.PROCESSING);
         try {
-            final List<NodeChannel> channels = engine.getConfigurationService().getNodeChannels(false);
+            final List<NodeChannel> channels = new ArrayList<NodeChannel>(engine.getConfigurationService().getNodeChannels(false));
             Set<String> readyChannels = null;
             if (parameterService.is(ParameterConstants.ROUTING_QUERY_CHANNELS_FIRST)) {
                 readyChannels = getReadyChannels();
+                engine.getClusterService().refreshLock(ClusterConstants.ROUTE);
+            }
+            INodeCommunicationService nodeComService = engine.getNodeCommunicationService();
+            RemoteNodeStatuses nodeStatuses = null;
+            if (useChannelThreading) {
+                nodeStatuses = new RemoteNodeStatuses(engine.getConfigurationService().getChannels(false));
             }
             for (NodeChannel nodeChannel : channels) {
-                engine.getClusterService().refreshLock(ClusterConstants.ROUTE);
                 if (nodeChannel.isEnabled() && (readyChannels == null || readyChannels.contains(nodeChannel.getChannelId()))) {
-                    processInfo.setCurrentTableName("");
-                    processInfo.setCurrentChannelId(nodeChannel.getChannelId());
-                    dataCount += routeDataForChannel(processInfo, nodeChannel, sourceNode, false, null, null);
+                    if (useChannelThreading) {
+                        NodeCommunication lock = nodeComService.find(engine.getNodeId(), nodeChannel.getChannelId(), CommunicationType.ROUTE);
+                        nodeComService.execute(lock, nodeStatuses, this);
+                    } else {
+                        processInfo.setCurrentTableName("");
+                        processInfo.setCurrentChannelId(nodeChannel.getChannelId());
+                        dataCount += routeDataForChannel(processInfo, nodeChannel, sourceNode, null, null);
+                    }
                 } else if (!nodeChannel.isEnabled()) {
-                    gapDetector.setIsAllDataRead(false);
+                    isAllDataReadByChannel.put(nodeChannel.getChannelId(), false);
                     if (log.isDebugEnabled()) {
                         log.debug("Not routing the {} channel.  It is either disabled or suspended.", nodeChannel.getChannelId());
                     }
                 }
             }
+            if (useChannelThreading) {
+                int timeout = parameterService.getInt(ParameterConstants.JOB_ROUTING_PERIOD_TIME_MS, 10000);
+                while (!nodeStatuses.isComplete()) {
+                    try {
+                        log.debug("Waiting for threads to complete");
+                        nodeStatuses.waitForComplete(timeout);
+                    } catch (org.jumpmind.exception.InterruptedException e) {
+                        if (e.getCause() != null && e.getCause() instanceof InterruptedException) {
+                            throw e;
+                        }
+                        engine.getClusterService().refreshLock(ClusterConstants.ROUTE);
+                        List<String> busyChannels = new ArrayList<String>();
+                        Iterator<RemoteNodeStatus> iter = nodeStatuses.iterator();
+                        while (iter.hasNext()) {
+                            RemoteNodeStatus nodeStatus = iter.next();
+                            if (nodeStatus.isComplete()) {
+                                dataCount += nodeStatus.getDataProcessed();
+                                iter.remove();
+                            } else {
+                                busyChannels.add(nodeStatus.getQueue());
+                            }
+                        }
+                        if (parameterService.is(ParameterConstants.ROUTING_QUERY_CHANNELS_FIRST)) {
+                            readyChannels = getReadyChannels();
+                        }
+                        List<String> executeChannels = new ArrayList<String>();
+                        for (NodeChannel nodeChannel : channels) {
+                            if (nodeChannel.isEnabled() && (readyChannels == null || readyChannels.contains(nodeChannel.getChannelId()))
+                                    && !busyChannels.contains(nodeChannel.getChannelId())) {
+                                executeChannels.add(nodeChannel.getChannelId());
+                            }
+                        }
+                        if (executeChannels.size() > 0) {
+                            gapDetector.setIsAllDataRead(false);
+                            gapDetector.afterRouting();
+                            for (String channelId : executeChannels) {
+                                log.debug("Submitting {} channel again", channelId);
+                                isAllDataReadByChannel.remove(channelId);
+                                NodeCommunication lock = nodeComService.find(engine.getNodeId(), channelId, CommunicationType.ROUTE);
+                                nodeComService.execute(lock, nodeStatuses, this);
+                            }
+                        }
+                    }
+                }
+                dataCount += nodeStatuses.getDataProcessedCount();
+            }
+            gapDetector.setIsAllDataRead(isAllDataRead());
             processInfo.setStatus(ProcessInfo.ProcessStatus.OK);
         } catch (RuntimeException ex) {
             processInfo.setStatus(ProcessInfo.ProcessStatus.ERROR);
@@ -461,9 +537,32 @@ public class RouterService extends AbstractService implements IRouterService {
         return onlyDefaultRoutersAssigned;
     }
 
-    protected long routeDataForChannel(ProcessInfo processInfo, final NodeChannel nodeChannel, final Node sourceNode, boolean isOverrideContainsBigLob,
-            Map<String, OutgoingBatch> overrideBatchesByNodes, Map<Integer, Map<String, OutgoingBatch>> overrideBatchesByGroups) {
-        ChannelRouterContext context = null;
+    @Override
+    public void execute(NodeCommunication nodeCommunication, RemoteNodeStatus status) {
+        Node sourceNode = engine.getNodeService().findIdentity();
+        String channelId = nodeCommunication.getQueue();
+        List<NodeChannel> nodeChannels = engine.getConfigurationService().getNodeChannels(false);
+        ProcessInfo processInfo = engine.getStatisticManager().newProcessInfo(new ProcessInfoKey(sourceNode.getNodeId(),
+                channelId, null, ProcessType.ROUTER_JOB));
+        processInfo.setStatus(ProcessInfo.ProcessStatus.PROCESSING);
+        for (NodeChannel nodeChannel : nodeChannels) {
+            if (nodeChannel.getChannelId().equals(channelId)) {
+                try {
+                    log.debug("Routing on thread for {}", nodeChannel.getChannelId());
+                    long dataProcessed = routeDataForChannel(processInfo, nodeChannel, sourceNode, nodeCommunication, null);
+                    status.setDataProcessed(dataProcessed);
+                    processInfo.setStatus(ProcessInfo.ProcessStatus.OK);
+                } catch (RuntimeException e) {
+                    processInfo.setStatus(ProcessInfo.ProcessStatus.ERROR);
+                    throw e;
+                }
+                break;
+            }
+        }
+    }
+
+    protected long routeDataForChannel(ProcessInfo processInfo, final NodeChannel nodeChannel, final Node sourceNode, NodeCommunication nodeCommunication,
+            ChannelRouterContext context) {
         long ts = System.currentTimeMillis();
         long dataCount = -1;
         try {
@@ -474,37 +573,34 @@ public class RouterService extends AbstractService implements IRouterService {
             boolean onlyDefaultRoutersAssigned = onlyDefaultRoutersAssigned(nodeChannel.getChannel(),
                     parameterService.getNodeGroupId(), triggerRouters);
             IBatchAlgorithm batchAlgorithm = extensionService.getExtensionPointMap(IBatchAlgorithm.class).get(nodeChannel.getBatchAlgorithm());
-            context = new ChannelRouterContext(sourceNode.getNodeId(), nodeChannel,
-                    symmetricDialect.getPlatform().getSqlTemplate().startSqlTransaction(),
-                    batchAlgorithm);
+            if (context == null) {
+                context = new ChannelRouterContext(sourceNode.getNodeId(), nodeChannel,
+                        symmetricDialect.getPlatform().getSqlTemplate().startSqlTransaction(),
+                        batchAlgorithm);
+            }
             context.setProduceCommonBatches(producesCommonBatches);
             context.setProduceGroupBatches(useCommonGroups);
             context.setNonCommonForIncoming(parameterService.is(ParameterConstants.ROUTING_USE_NON_COMMON_FOR_INCOMING));
             context.setOnlyDefaultRoutersAssigned(onlyDefaultRoutersAssigned);
             context.setDataGaps(gapDetector.getDataGaps());
-            context.setOverrideContainsBigLob(isOverrideContainsBigLob);
             context.setMaxBatchesJdbcFlushSize(parameterService.getInt(ParameterConstants.ROUTING_FLUSH_BATCHES_JDBC_BATCH_SIZE, 5000));
             int maxBatchSizeExceedPercent = parameterService.getInt(ParameterConstants.ROUTING_MAX_BATCH_SIZE_EXCEED_PERCENT);
             if (maxBatchSizeExceedPercent > 0) {
                 context.setBatchSizeNotToExceed((int) (nodeChannel.getMaxBatchSize() * (1 + (maxBatchSizeExceedPercent / 100f))));
             }
-            if (overrideBatchesByNodes != null) {
-                context.getBatchesByNodes().putAll(overrideBatchesByNodes);
-            }
-            if (overrideBatchesByGroups != null) {
-                context.getBatchesByGroups().putAll(overrideBatchesByGroups);
-            }
-            dataCount = selectDataAndRoute(processInfo, context);
+            dataCount = selectDataAndRoute(processInfo, nodeCommunication, context);
             return dataCount;
         } catch (DelayRoutingException ex) {
             log.info("The routing process for the {} channel is being delayed.  {}", nodeChannel.getChannelId(), isNotBlank(ex.getMessage()) ? ex.getMessage()
                     : "");
+            isAllDataReadByChannel.put(nodeChannel.getChannelId(), false);
             if (context != null) {
                 context.rollback();
                 dataCount = context.getCommittedDataEventCount();
             }
         } catch (InterruptedException ex) {
             log.warn("The routing process was interrupted.  Rolling back changes");
+            isAllDataReadByChannel.put(nodeChannel.getChannelId(), false);
             if (context != null) {
                 context.rollback();
                 dataCount = context.getCommittedDataEventCount();
@@ -514,6 +610,7 @@ public class RouterService extends AbstractService implements IRouterService {
                     String.format(
                             "Failed to route and batch data on '%s' channel due to an invalid router expression",
                             nodeChannel.getChannelId()), ex);
+            isAllDataReadByChannel.put(nodeChannel.getChannelId(), false);
             if (context != null) {
                 context.rollback();
                 dataCount = context.getCommittedDataEventCount();
@@ -521,44 +618,27 @@ public class RouterService extends AbstractService implements IRouterService {
         } catch (ProtocolException ex) {
             if (context != null) {
                 context.rollback();
-                dataCount = context.getCommittedDataEventCount();
-            }
-            if (isOverrideContainsBigLob) {
-                log.error(String.format("Failed to route and batch data on '%s' channel", nodeChannel.getChannelId()), ex);
-                return context.getCommittedDataEventCount();
-            } else if (context != null) {
-                Map<String, OutgoingBatch> batchesByNodes = new HashMap<String, OutgoingBatch>(context.getBatchesByNodes());
-                Map<Integer, Map<String, OutgoingBatch>> batchesByGroups = new HashMap<Integer, Map<String, OutgoingBatch>>(context.getBatchesByGroups());
-                long batchId = -1;
-                for (OutgoingBatch batch : batchesByNodes.values()) {
-                    batch.resetRouterStats();
-                    batchId = batch.getBatchId();
+                if (!nodeChannel.getChannel().isContainsBigLob() && !context.isOverrideContainsBigLob()) {
+                    log.info("Re-attempting routing with contains_big_lobs temporarily enabled for channel {}", nodeChannel.getChannelId());
+                    context.setOverrideContainsBigLob(true);
+                    dataCount = 0;
+                    return routeDataForChannel(processInfo, nodeChannel, sourceNode, nodeCommunication, context);
                 }
-                for (Map<String, OutgoingBatch> groupBatches : batchesByGroups.values()) {
-                    for (OutgoingBatch batch : groupBatches.values()) {
-                        batch.resetRouterStats();
-                        batchId = batch.getBatchId();
-                    }
-                }
-                log.info("Re-attempting routing for batch {} with contains_big_lobs temporarily enabled for channel {}",
-                        batchId, nodeChannel.getChannelId());
-                dataCount = 0;
-                gapDetector.addDataIds(context.getDataIds());
-                gapDetector.afterRouting();
-                gapDetector.beforeRouting();
-                long dataCountWithBigLob = routeDataForChannel(processInfo, nodeChannel, sourceNode, true, batchesByNodes, batchesByGroups);
-                dataCount = context.getCommittedDataEventCount() + dataCountWithBigLob;
             }
+            log.error(String.format("Failed to route and batch data on '%s' channel", nodeChannel.getChannelId()), ex);
+            isAllDataReadByChannel.put(nodeChannel.getChannelId(), false);
         } catch (CommonBatchCollisionException e) {
             log.info(e.getMessage());
-            gapDetector.setIsAllDataRead(false);
+            isAllDataReadByChannel.put(nodeChannel.getChannelId(), false);
             dataCount = context == null ? 0 : context.getDataEventList().size(); // we prevented writing the collision, so commit what we have
         } catch (Throwable ex) {
             log.error(String.format("Failed to route and batch data on '%s' channel", nodeChannel.getChannelId()), ex);
+            isAllDataReadByChannel.put(nodeChannel.getChannelId(), false);
             if (context != null) {
                 context.rollback();
                 dataCount = context.getCommittedDataEventCount();
             }
+            engine.getOutgoingBatchService().updateAbandonedRoutingBatches();
         } finally {
             try {
                 if (dataCount > 0) {
@@ -568,9 +648,6 @@ public class RouterService extends AbstractService implements IRouterService {
                     context.clearDataEventsList();
                     context.incrementStat(System.currentTimeMillis() - insertTs, ChannelRouterContext.STAT_INSERT_DATA_EVENTS_MS);
                     completeBatchesAndCommit(context);
-                    gapDetector.addDataIds(context.getDataIds());
-                    gapDetector.setIsAllDataRead(context.getDataIds().size() < context.getChannel().getMaxDataToRoute());
-                    hasMaxDataRoutedOnChannel |= context.getDataIds().size() >= context.getChannel().getMaxDataToRoute();
                     if (parameterService.is(ParameterConstants.ROUTING_COLLECT_STATS_UNROUTED)) {
                         Data lastDataProcessed = context.getLastDataProcessed();
                         if (lastDataProcessed != null && lastDataProcessed.getDataId() > 0) {
@@ -586,11 +663,9 @@ public class RouterService extends AbstractService implements IRouterService {
                             engine.getStatisticManager().setDataUnRouted(channelId, dataLeftToRoute);
                         }
                     }
-                } else if (dataCount == -1) {
-                    // rolled back as exception, but let gap detector know about what was committed before halting
-                    gapDetector.addDataIds(context.getDataIds());
-                    gapDetector.setIsAllDataRead(false);
                 }
+                hasMaxDataRoutedByChannel.put(nodeChannel.getChannelId(), context.getCommittedDataIdCount() >= context.getChannel().getMaxDataToRoute());
+                isAllDataReadByChannel.putIfAbsent(nodeChannel.getChannelId(), context.getCommittedDataIdCount() < context.getChannel().getMaxDataToRoute());
             } catch (Exception e) {
                 if (context != null) {
                     context.rollback();
@@ -622,6 +697,8 @@ public class RouterService extends AbstractService implements IRouterService {
         for (IDataRouter dataRouter : usedRouters) {
             dataRouter.contextCommitted(context);
         }
+        gapDetector.addDataIds(context.getDataIds());
+        context.getDataIds().clear();
         context.setNeedsCommitted(false);
     }
 
@@ -705,7 +782,7 @@ public class RouterService extends AbstractService implements IRouterService {
      * @param context
      *            The current context of the routing process
      */
-    protected long selectDataAndRoute(ProcessInfo processInfo, ChannelRouterContext context) throws InterruptedException {
+    protected long selectDataAndRoute(ProcessInfo processInfo, NodeCommunication nodeCommunication, ChannelRouterContext context) throws InterruptedException {
         IDataToRouteReader reader = startReading(context);
         Data data = null;
         Data nextData = null;
@@ -727,6 +804,9 @@ public class RouterService extends AbstractService implements IRouterService {
                         processInfo.incrementCurrentDataCount();
                         if (data.isPreRouted()) {
                             context.addData(data.getDataId());
+                            statsDataCount++;
+                            totalDataCount++;
+                            totalDataEventCount++;
                         } else {
                             boolean atTransactionBoundary = false;
                             if (nextData != null) {
@@ -765,7 +845,9 @@ public class RouterService extends AbstractService implements IRouterService {
                         }
                         long routeTs = System.currentTimeMillis() - ts;
                         if (routeTs > LOG_PROCESS_SUMMARY_THRESHOLD) {
-                            engine.getClusterService().refreshLock(ClusterConstants.ROUTE);
+                            if (!useChannelThreading) {
+                                engine.getClusterService().refreshLock(ClusterConstants.ROUTE);
+                            }
                             log.info("Routing channel '{}' for {} seconds, "
                                     + "routedCount={}, dataEventCount={}, startDataId={}, endDataId={}, readCount={}, peekAheadFillCount={}, dataGaps={}",
                                     context.getChannel().getChannelId(), ((System.currentTimeMillis() - startTime) / 1000), totalDataCount, totalDataEventCount,
@@ -824,8 +906,6 @@ public class RouterService extends AbstractService implements IRouterService {
             table = buildTableFromTriggerHistory(data.getTriggerHistory());
         }
         if (triggerRouters != null && triggerRouters.size() > 0) {
-            boolean isUnrouted = false;
-            boolean alreadyInsertedUnrouted = false;
             for (TriggerRouter triggerRouter : triggerRouters) {
                 DataMetaData dataMetaData = new DataMetaData(data, table, triggerRouter.getRouter(),
                         context.getChannel());
@@ -852,7 +932,7 @@ public class RouterService extends AbstractService implements IRouterService {
                         counterStat.incrementCount();
                     } else {
                         try {
-                            IDataRouter dataRouter = getDataRouter(triggerRouter.getRouter());
+                            IDataRouter dataRouter = getDataRouter(triggerRouter.getRouter(), dataMetaData);
                             long ts = System.currentTimeMillis();
                             nodeIds = dataRouter.routeToNodes(context, dataMetaData,
                                     findAvailableNodes(triggerRouter, context), false, false,
@@ -887,16 +967,16 @@ public class RouterService extends AbstractService implements IRouterService {
                         nodeIds.remove(engine.getNodeService().findIdentityNodeId());
                     }
                 }
-                isUnrouted = (nodeIds == null || nodeIds.size() == 0);
-                if (!isUnrouted || !alreadyInsertedUnrouted) {
+                if (nodeIds != null && nodeIds.size() > 0) {
                     numberOfDataEventsInserted += insertDataEvents(processInfo, context, dataMetaData, nodeIds);
-                    if (isUnrouted) {
-                        alreadyInsertedUnrouted = true;
-                    }
                 }
                 if (context.isForceNonCommon()) {
                     context.setForceNonCommon(false);
                 }
+            }
+            if (numberOfDataEventsInserted == 0) {
+                DataMetaData dataMetaData = new DataMetaData(data, table, null, context.getChannel());
+                numberOfDataEventsInserted += insertDataEvents(processInfo, context, dataMetaData, null);
             }
         } else {
             Integer triggerHistId = data.getTriggerHistory() != null ? data.getTriggerHistory().getTriggerHistoryId() : -1;
@@ -951,7 +1031,7 @@ public class RouterService extends AbstractService implements IRouterService {
                 loadId = engine.getSequenceService().nextVal(Constants.SEQUENCE_OUTGOING_BATCH_LOAD_ID);
                 context.setLastLoadId(loadId);
             }
-            if (context.getChannel().isReloadFlag()) {
+            if (context.getChannel().isReloadFlag() && StringUtils.isBlank(dataMetaData.getData().getTransactionId())) {
                 context.setNeedsCommitted(true);
             }
         } else if (eventType == DataEventType.CREATE) {
@@ -986,8 +1066,15 @@ public class RouterService extends AbstractService implements IRouterService {
                 batch.incrementRowCount(eventType);
                 batch.incrementDataRowCount();
                 if (context.getChannel().getChannel().isFileSyncFlag() && context.getChannel().getChannel().isUseRowDataToRoute()) {
-                    String fileName = dataMetaData.getData().getParsedData(CsvData.ROW_DATA)[3];
-                    batch.incrementFileCount(fileName);
+                    // ROW_DATA is populated for inserts and updates
+                    // PK_DATA is populated for updates and deletes
+                    String[] data = dataMetaData.getData().getParsedData(CsvData.ROW_DATA);
+                    if (data == null) {
+                        data = dataMetaData.getData().getParsedData(CsvData.PK_DATA);
+                    }
+                    if (data != null && data.length >= 4) {
+                        batch.incrementFileCount(data[3]);
+                    }
                 } else {
                     batch.incrementTableCount(tableName);
                 }
@@ -1039,7 +1126,7 @@ public class RouterService extends AbstractService implements IRouterService {
         return numberOfDataEventsInserted;
     }
 
-    protected IDataRouter getDataRouter(Router router) {
+    protected IDataRouter getDataRouter(Router router, DataMetaData dataMetaData) {
         IDataRouter dataRouter = null;
         Map<String, IDataRouter> routers = getRouters();
         if (!StringUtils.isBlank(router.getRouterType())) {
@@ -1051,6 +1138,8 @@ public class RouterService extends AbstractService implements IRouterService {
                     invalidRouterType.put(router.getRouterId(), counterStat);
                 }
                 counterStat.incrementCount();
+            } else if (dataRouter.isDmlOnly() && !dataMetaData.getData().getDataEventType().isDml()) {
+                dataRouter = null;
             }
         }
         if (dataRouter == null) {
@@ -1142,6 +1231,24 @@ public class RouterService extends AbstractService implements IRouterService {
                 rowData = dataMetaData.getData().toParsedRowData();
             }
             return rowData == null || dataMetaData.getTable().getColumnCount() == rowData.length;
+        }
+        return true;
+    }
+
+    protected boolean hasMaxDataRouted() {
+        for (Boolean b : hasMaxDataRoutedByChannel.values()) {
+            if (b != null && b.booleanValue()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    protected boolean isAllDataRead() {
+        for (Boolean b : isAllDataReadByChannel.values()) {
+            if (b == null || !b.booleanValue()) {
+                return false;
+            }
         }
         return true;
     }

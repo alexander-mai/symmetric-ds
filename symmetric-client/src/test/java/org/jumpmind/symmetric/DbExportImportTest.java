@@ -71,7 +71,8 @@ public class DbExportImportTest extends AbstractServiceTest {
 
     @Test
     public void testInsertBigIntIntoOracleIntField() {
-        if (getPlatform().getName().equals(DatabaseNamesConstants.ORACLE) || getPlatform().getName().equals(DatabaseNamesConstants.ORACLE122)) {
+        if (getPlatform().getName().equals(DatabaseNamesConstants.ORACLE) || getPlatform().getName().equals(DatabaseNamesConstants.ORACLE122) || getPlatform()
+                .getName().equals(DatabaseNamesConstants.ORACLE23)) {
             ISymmetricEngine engine = getSymmetricEngine();
             IDatabasePlatform platform = engine.getDatabasePlatform();
             Table table = new Table("TEST_ORACLE_INTEGER");
@@ -136,17 +137,14 @@ public class DbExportImportTest extends AbstractServiceTest {
                 .getDefaultCatalog());
         export.setCompatible(Compatible.H2);
         String output = export.exportTables(tables).toLowerCase();
-        Assert.assertEquals(output, 48, StringUtils.countMatches(output, "create table "));
+        Assert.assertEquals(output, 46, StringUtils.countMatches(output, "create table "));
         if (engine.getDatabasePlatform().getName().equals(DatabaseNamesConstants.INFORMIX)) {
             return;
         }
-        final int EXPECTED_VARCHAR_MAX_COUNT = engine.getDatabasePlatform().getName().equals(DatabaseNamesConstants.SQLITE) ? 318 : 62;
+        final int EXPECTED_VARCHAR_MAX_COUNT = engine.getDatabasePlatform().getName().equals(DatabaseNamesConstants.SQLITE) ? 318 : 64;
         final String EXPECTED_VARCHAR_MAX_STRING;
         if (engine.getDatabasePlatform().getName().equals(DatabaseNamesConstants.DERBY)) {
             EXPECTED_VARCHAR_MAX_STRING = "clob";
-        } else if (engine.getDatabasePlatform().getName().equals(DatabaseNamesConstants.H2)
-                && !Version.isOlderThanVersion(engine.getSymmetricDialect().getProductVersion(), "2.0.202")) {
-            EXPECTED_VARCHAR_MAX_STRING = "character varying(1000000000)";
         } else {
             EXPECTED_VARCHAR_MAX_STRING = "longvarchar";
         }
@@ -200,7 +198,7 @@ public class DbExportImportTest extends AbstractServiceTest {
         IDatabasePlatform platform = engine.getDatabasePlatform();
         String dbName = platform.getName();
         if (dbName.equals(DatabaseNamesConstants.ORACLE) || dbName.equals(DatabaseNamesConstants.ORACLE122)
-                || dbName.equals(DatabaseNamesConstants.POSTGRESQL)) {
+                || dbName.equals(DatabaseNamesConstants.ORACLE23) || dbName.equals(DatabaseNamesConstants.POSTGRESQL)) {
             ISqlTemplate template = engine.getSqlTemplate();
             try {
                 template.update(String.format("drop table \"%s\"", TEST_TS_W_TZ));

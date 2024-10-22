@@ -37,6 +37,7 @@ import org.jumpmind.db.sql.ISqlReadCursor;
 import org.jumpmind.db.sql.Row;
 import org.jumpmind.symmetric.ISymmetricEngine;
 import org.jumpmind.symmetric.common.Constants;
+import org.jumpmind.symmetric.common.ErrorConstants;
 import org.jumpmind.symmetric.common.ParameterConstants;
 import org.jumpmind.symmetric.io.data.Batch;
 import org.jumpmind.symmetric.io.data.Batch.BatchType;
@@ -145,8 +146,8 @@ public class SelectFromSymDataSource extends SelectFromSource {
                     boolean isFileParserRouter = triggerHistory.getTriggerId().equals(AbstractFileParsingRouter.TRIGGER_ID_FILE_PARSER);
                     if (lastTriggerHistory == null || lastTriggerHistory.getTriggerHistoryId() != triggerHistory.getTriggerHistoryId() ||
                             lastRouterId == null || !lastRouterId.equals(routerId)) {
-                        sourceTable = columnsAccordingToTriggerHistory.lookup(routerId, triggerHistory, false, !isFileParserRouter, true);
-                        targetTable = columnsAccordingToTriggerHistory.lookup(routerId, triggerHistory, true, false, true);
+                        sourceTable = columnsAccordingToTriggerHistory.lookup(routerId, triggerHistory, false, !isFileParserRouter, false, true);
+                        targetTable = columnsAccordingToTriggerHistory.lookup(routerId, triggerHistory, true, false, false, true);
                         if (trigger != null && trigger.isUseStreamLobs() || (data.getRowData() != null && hasLobsThatNeedExtract(sourceTable, data))) {
                             requiresLobSelectedFromSource = true;
                         } else {
@@ -156,20 +157,37 @@ public class SelectFromSymDataSource extends SelectFromSource {
                     data.setNoBinaryOldData(requiresLobSelectedFromSource || dialectHasNoOldBinaryData);
                     outgoingBatch.incrementExtractRowCount();
                     outgoingBatch.incrementExtractRowCount(data.getDataEventType());
-                    if (data.getDataEventType().equals(DataEventType.INSERT) || data.getDataEventType().equals(DataEventType.UPDATE)) {
-                        int expectedCommaCount = triggerHistory.getParsedColumnNames().length;
-                        int commaCount = StringUtils.countMatches(data.getRowData(), ",") + 1;
-                        if (commaCount < expectedCommaCount) {
+                    if (data.getDataEventType() == DataEventType.INSERT || data.getDataEventType() == DataEventType.UPDATE) {
+                        int expectedColumnCount = triggerHistory.getParsedColumnNames().length;
+                        int columnCount = 0;
+                        boolean corrupted = false;
+                        if (outgoingBatch.getSqlCode() == ErrorConstants.PROTOCOL_VIOLATION_CODE) {
+                            columnCount = data.getParsedData(CsvData.ROW_DATA).length;
+                            corrupted = columnCount != expectedColumnCount;
+                        } else {
+                            columnCount = StringUtils.countMatches(data.getRowData(), ",") + 1;
+                            corrupted = columnCount < expectedColumnCount;
+                        }
+                        if (corrupted) {
                             String message = "The extracted row for table %s had %d columns but expected %d.  ";
                             if (containsBigLob) {
-                                message += "Corrupted row for data ID " + data.getDataId() + ": " + data.getRowData();
+                                message += "Trigger history " + triggerHistory.getTriggerHistoryId() + " has columns: " + triggerHistory.getColumnNames() +
+                                        ".  Corrupted row for data ID " + data.getDataId() + ": " + data.getRowData();
                             } else {
                                 message += "If this happens often, it might be better to isolate the table with sym_channel.contains_big_lobs enabled.";
                             }
-                            throw new ProtocolException(message, data.getTableName(), commaCount, expectedCommaCount);
+                            throw new ProtocolException(message, data.getTableName(), columnCount, expectedColumnCount);
                         }
-                    }
-                    if (data.getDataEventType() == DataEventType.CREATE && StringUtils.isBlank(data.getCsvData(CsvData.ROW_DATA))) {
+                    } else if (data.getDataEventType() == DataEventType.DELETE && outgoingBatch.getSqlCode() == ErrorConstants.PROTOCOL_VIOLATION_CODE) {
+                        int expectedColumnCount = triggerHistory.getParsedPkColumnNames().length;
+                        int columnCount = data.getParsedData(CsvData.PK_DATA).length;
+                        if (columnCount != expectedColumnCount) {
+                            String message = "The extracted row for table %s had %d pk columns but expected %d.  " +
+                                    "Trigger history " + triggerHistory.getTriggerHistoryId() + " has pk columns: " + triggerHistory.getPkColumnNames() +
+                                    ".  Corrupted row for data ID " + data.getDataId() + ": " + data.getPkData();
+                            throw new ProtocolException(message, data.getTableName(), columnCount, expectedColumnCount);
+                        }
+                    } else if (data.getDataEventType() == DataEventType.CREATE && StringUtils.isBlank(data.getCsvData(CsvData.ROW_DATA))) {
                         if (!processCreateEvent(triggerHistory, routerId, data)) {
                             return null;
                         }
@@ -190,7 +208,7 @@ public class SelectFromSymDataSource extends SelectFromSource {
         processInfo.setCurrentTableName(triggerHistory.getSourceTableName());
         String initialLoadSelect = data.getRowData();
         if (initialLoadSelect == null && triggerRouter.getTrigger().isStreamRow()) {
-            sourceTable = columnsAccordingToTriggerHistory.lookup(triggerRouter.getRouter().getRouterId(), triggerHistory, false, true, false);
+            sourceTable = columnsAccordingToTriggerHistory.lookup(triggerRouter.getRouter().getRouterId(), triggerHistory, false, true, false, false);
             Column[] columns = sourceTable.getPrimaryKeyColumns();
             String[] pkData = data.getParsedData(CsvData.PK_DATA);
             boolean[] nullKeyValues = new boolean[columns.length];
@@ -217,7 +235,7 @@ public class SelectFromSymDataSource extends SelectFromSource {
         targetTable = reloadSource.getTargetTable();
         requiresLobSelectedFromSource = reloadSource.requiresLobsSelectedFromSource(data);
         if (data == null) {
-            data = (Data) next();
+            data = new Data();
         }
         return data;
     }
@@ -250,7 +268,7 @@ public class SelectFromSymDataSource extends SelectFromSource {
         String[] pkData = data.getParsedData(CsvData.PK_DATA);
         if (pkData != null && pkData.length > 0) {
             outgoingBatch.setLoadId(Long.parseLong(pkData[0]));
-            TableReloadStatus tableReloadStatus = dataService.getTableReloadStatusByLoadId(outgoingBatch.getLoadId());
+            TableReloadStatus tableReloadStatus = dataService.getTableReloadStatusByLoadIdAndSourceNodeId(outgoingBatch.getLoadId(), engine.getNodeId());
             if (tableReloadStatus != null && tableReloadStatus.isCompleted()) {
                 // Ignore create table (indexes and foreign keys) at end of load if it was cancelled
                 return false;
@@ -262,7 +280,7 @@ public class SelectFromSymDataSource extends SelectFromSource {
          */
         sourceTable = symmetricDialect.getTargetDialect().getPlatform().getTableFromCache(sourceTable.getCatalog(),
                 sourceTable.getSchema(), sourceTable.getName(), true);
-        targetTable = columnsAccordingToTriggerHistory.lookup(routerId, triggerHistory, true, true, false);
+        targetTable = columnsAccordingToTriggerHistory.lookup(routerId, triggerHistory, true, true, true, false);
         Table copyTargetTable = targetTable.copy();
         Database db = new Database();
         db.setName("dataextractor");
@@ -292,24 +310,24 @@ public class SelectFromSymDataSource extends SelectFromSource {
                 }
             }
         }
-        
-        if(parameterService.is(ParameterConstants.DBDIALECT_SYBASE_ASE_CONVERT_UNITYPES_FOR_SYNC)) {
-            for(Column column : copyTargetTable.getColumns()) {
-                Map<String,PlatformColumn> platformColumns = column.getPlatformColumns();
-                String platformColumnType = platformColumns.get("ase").getType();
-                if(platformColumnType.equalsIgnoreCase("UNITEXT")) {
-                    column.setMappedType("CLOB");
-                    column.setMappedTypeCode(Types.CLOB);
-                } else if(platformColumnType.equalsIgnoreCase("UNICHAR")) {
-                    column.setMappedType("CHAR");
-                    column.setMappedTypeCode(Types.CHAR);
-                } else if(platformColumnType.equalsIgnoreCase("UNIVARCHAR")) {
-                    column.setMappedType("VARCHAR");
-                    column.setMappedTypeCode(Types.VARCHAR);
+        if (parameterService.is(ParameterConstants.DBDIALECT_SYBASE_ASE_CONVERT_UNITYPES_FOR_SYNC)) {
+            for (Column column : copyTargetTable.getColumns()) {
+                Map<String, PlatformColumn> platformColumns = column.getPlatformColumns();
+                if (platformColumns.containsKey(DatabaseNamesConstants.ASE)) {
+                    String platformColumnType = platformColumns.get(DatabaseNamesConstants.ASE).getType();
+                    if (platformColumnType.equalsIgnoreCase("UNITEXT")) {
+                        column.setMappedType("CLOB");
+                        column.setMappedTypeCode(Types.CLOB);
+                    } else if (platformColumnType.equalsIgnoreCase("UNICHAR")) {
+                        column.setMappedType("CHAR");
+                        column.setMappedTypeCode(Types.CHAR);
+                    } else if (platformColumnType.equalsIgnoreCase("UNIVARCHAR")) {
+                        column.setMappedType("VARCHAR");
+                        column.setMappedTypeCode(Types.VARCHAR);
+                    }
                 }
             }
         }
-        
         data.setRowData(CsvUtils.escapeCsvData(DatabaseXmlUtil.toXml(db)));
         return true;
     }
@@ -323,6 +341,9 @@ public class SelectFromSymDataSource extends SelectFromSource {
             cursor.close();
             cursor = null;
         }
+        batch = null;
+        sourceTable = null;
+        targetTable = null;
     }
 
     public void close() {

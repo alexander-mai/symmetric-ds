@@ -72,6 +72,7 @@ import org.jumpmind.symmetric.io.data.transform.VariableColumnTransform;
 import org.jumpmind.symmetric.model.IModelObject;
 import org.jumpmind.symmetric.model.NodeGroupLink;
 import org.jumpmind.symmetric.security.INodePasswordFilter;
+import org.jumpmind.symmetric.security.ISmtpPasswordFilter;
 import org.jumpmind.symmetric.service.IConfigurationService;
 import org.jumpmind.symmetric.service.IExtensionService;
 import org.jumpmind.symmetric.service.IParameterService;
@@ -81,7 +82,14 @@ import org.jumpmind.util.FormatUtils;
 public class TransformService extends AbstractService implements ITransformService {
     private static final String NODE_FILTER_BSH = "filter = null; if (engine != null && engine.getExtensionService() != null) " +
             "filter = engine.getExtensionService().getExtensionPoint(org.jumpmind.symmetric.security.INodePasswordFilter.class); " +
-            "if (filter != null) return filter.%s(currentValue); else return currentValue;";
+            "if (filter != null) return filter.%s(currentValue, transformedData.getSourceValues().get(\"node_id\")); else return currentValue;";
+    private static final String SMTP_PASSWORD_BSH = "if (sourceDmlTypeString.equalsIgnoreCase(\"insert\") || sourceDmlTypeString.equalsIgnoreCase(\"update\")) {"
+            + "if (PARAM_KEY.equalsIgnoreCase(\"smtp.password\")) {"
+            + "filter = null; if (engine != null && engine.getExtensionService() != null) " +
+            "filter = engine.getExtensionService().getExtensionPoint(org.jumpmind.symmetric.security.ISmtpPasswordFilter.class); " +
+            "if (filter != null) return filter.%s(currentValue); else return currentValue;"
+            + "} else { return currentValue; }"
+            + "}";
     private IConfigurationService configurationService;
     private IExtensionService extensionService;
     private IParameterService parameterService;
@@ -270,6 +278,19 @@ public class TransformService extends AbstractService implements ITransformServi
             transform.setNodeGroupLink(nodeGroupLink);
             transforms.add(transform);
         }
+        if (extensionService.getExtensionPoint(ISmtpPasswordFilter.class) != null) {
+            String tableName = TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_PARAMETER);
+            TransformTableNodeGroupLink transform = new TransformTableNodeGroupLink();
+            transform.setSourceTableName(tableName);
+            transform.setTargetTableName(tableName);
+            transform.setTransformPoint(TransformPoint.EXTRACT);
+            TransformColumn column = new TransformColumn("param_value", "param_value", false);
+            column.setTransformType("bsh");
+            column.setTransformExpression(String.format(SMTP_PASSWORD_BSH, "onSmtpPasswordRender"));
+            transform.addTransformColumn(column);
+            transform.setNodeGroupLink(nodeGroupLink);
+            transforms.add(transform);
+        }
         return transforms;
     }
 
@@ -299,6 +320,43 @@ public class TransformService extends AbstractService implements ITransformServi
             transform.setNodeGroupLink(nodeGroupLink);
             transforms.add(transform);
         }
+        if (extensionService.getExtensionPoint(ISmtpPasswordFilter.class) != null) {
+            tableName = TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_PARAMETER);
+            transform = new TransformTableNodeGroupLink();
+            transform.setSourceTableName(tableName);
+            transform.setTargetTableName(tableName);
+            transform.setTransformPoint(TransformPoint.LOAD);
+            column = new TransformColumn("param_value", "param_value", false);
+            column.setTransformType("bsh");
+            column.setTransformExpression(String.format(SMTP_PASSWORD_BSH, "onSmtpPasswordSave"));
+            transform.addTransformColumn(column);
+            transform.setNodeGroupLink(nodeGroupLink);
+            transforms.add(transform);
+        }
+        TransformTableNodeGroupLink transformOutToIncoming = new TransformTableNodeGroupLink();
+        TransformColumn columnOutToIncoming = new TransformColumn("node_id", "node_id", true);
+        columnOutToIncoming.setTransformType("variable");
+        columnOutToIncoming.setTransformExpression("source_node_id");
+        transformOutToIncoming.setTransformPoint(TransformPoint.LOAD);
+        transformOutToIncoming.setSourceTableName(
+                TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_OUTGOING_ERROR));
+        transformOutToIncoming.setTargetTableName(
+                TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_INCOMING_ERROR));
+        transformOutToIncoming.setNodeGroupLink(nodeGroupLink);
+        transformOutToIncoming.addTransformColumn(columnOutToIncoming);
+        transforms.add(transformOutToIncoming);
+        TransformTableNodeGroupLink transformInToOutgoing = new TransformTableNodeGroupLink();
+        TransformColumn columnInToOutgoing = new TransformColumn("node_id", "node_id", true);
+        transformInToOutgoing.setTransformPoint(TransformPoint.LOAD);
+        columnInToOutgoing.setTransformType("variable");
+        columnInToOutgoing.setTransformExpression("source_node_id");
+        transformInToOutgoing.setSourceTableName(
+                TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_INCOMING_ERROR));
+        transformInToOutgoing.setTargetTableName(
+                TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_OUTGOING_ERROR));
+        transformInToOutgoing.setNodeGroupLink(nodeGroupLink);
+        transformInToOutgoing.addTransformColumn(columnInToOutgoing);
+        transforms.add(transformInToOutgoing);
         return transforms;
     }
 

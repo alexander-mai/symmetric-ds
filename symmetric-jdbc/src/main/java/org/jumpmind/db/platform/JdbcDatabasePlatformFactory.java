@@ -79,6 +79,7 @@ import org.jumpmind.db.platform.mssql.MsSql2016DatabasePlatform;
 import org.jumpmind.db.platform.mysql.MySqlDatabasePlatform;
 import org.jumpmind.db.platform.nuodb.NuoDbDatabasePlatform;
 import org.jumpmind.db.platform.oracle.Oracle122DatabasePlatform;
+import org.jumpmind.db.platform.oracle.Oracle23DatabasePlatform;
 import org.jumpmind.db.platform.oracle.OracleDatabasePlatform;
 import org.jumpmind.db.platform.postgresql.PostgreSql95DatabasePlatform;
 import org.jumpmind.db.platform.postgresql.PostgreSqlDatabasePlatform;
@@ -87,7 +88,6 @@ import org.jumpmind.db.platform.redshift.RedshiftDatabasePlatform;
 import org.jumpmind.db.platform.sqlanywhere.SqlAnywhere12DatabasePlatform;
 import org.jumpmind.db.platform.sqlanywhere.SqlAnywhereDatabasePlatform;
 import org.jumpmind.db.platform.sqlite.SqliteDatabasePlatform;
-import org.jumpmind.db.platform.tibero.TiberoDatabasePlatform;
 import org.jumpmind.db.platform.voltdb.VoltDbDatabasePlatform;
 import org.jumpmind.db.sql.SqlException;
 import org.jumpmind.db.sql.SqlTemplateSettings;
@@ -142,6 +142,7 @@ public class JdbcDatabasePlatformFactory implements IDatabasePlatformFactory {
         addPlatform(platforms, DatabaseNamesConstants.NUODB, NuoDbDatabasePlatform.class);
         addPlatform(platforms, DatabaseNamesConstants.ORACLE, OracleDatabasePlatform.class);
         addPlatform(platforms, DatabaseNamesConstants.ORACLE122, Oracle122DatabasePlatform.class);
+        addPlatform(platforms, DatabaseNamesConstants.ORACLE23, Oracle23DatabasePlatform.class);
         addPlatform(platforms, DatabaseNamesConstants.POSTGRESQL, PostgreSqlDatabasePlatform.class);
         addPlatform(platforms, DatabaseNamesConstants.POSTGRESQL95, PostgreSql95DatabasePlatform.class);
         addPlatform(platforms, DatabaseNamesConstants.SQLITE, SqliteDatabasePlatform.class);
@@ -149,7 +150,6 @@ public class JdbcDatabasePlatformFactory implements IDatabasePlatformFactory {
         addPlatform(platforms, DatabaseNamesConstants.SQLANYWHERE12, SqlAnywhere12DatabasePlatform.class);
         addPlatform(platforms, DatabaseNamesConstants.RAIMA, RaimaDatabasePlatform.class);
         addPlatform(platforms, DatabaseNamesConstants.REDSHIFT, RedshiftDatabasePlatform.class);
-        addPlatform(platforms, DatabaseNamesConstants.TIBERO, TiberoDatabasePlatform.class);
         addPlatform(platforms, DatabaseNamesConstants.VOLTDB, VoltDbDatabasePlatform.class);
         /**
          * Match on name + version to get a specific version
@@ -194,7 +194,6 @@ public class JdbcDatabasePlatformFactory implements IDatabasePlatformFactory {
         jdbcSubProtocolToPlatform.put(SqlAnywhereDatabasePlatform.JDBC_SUBPROTOCOL, SqlAnywhereDatabasePlatform.class);
         jdbcSubProtocolToPlatform.put(RaimaDatabasePlatform.JDBC_SUBPROTOCOL, RaimaDatabasePlatform.class);
         jdbcSubProtocolToPlatform.put(RedshiftDatabasePlatform.JDBC_SUBPROTOCOL, RedshiftDatabasePlatform.class);
-        jdbcSubProtocolToPlatform.put(TiberoDatabasePlatform.JDBC_SUBPROTOCOL_THIN, TiberoDatabasePlatform.class);
         jdbcSubProtocolToPlatform.put(VoltDbDatabasePlatform.JDBC_SUBPROTOCOL, VoltDbDatabasePlatform.class);
     }
 
@@ -307,9 +306,13 @@ public class JdbcDatabasePlatformFactory implements IDatabasePlatformFactory {
         if (nameVersion.getName().equalsIgnoreCase(DatabaseNamesConstants.ORACLE)) {
             int majorVersion = Integer.valueOf(metaData.getDatabaseMajorVersion());
             int minorVersion = Integer.valueOf(metaData.getDatabaseMinorVersion());
-            if (majorVersion > 12 || (majorVersion == 12 && minorVersion >= 2)) {
+            if (majorVersion < 23 && majorVersion > 12 || (majorVersion == 12 && minorVersion >= 2)) {
                 if (isOracle122Compatible(connection)) {
                     nameVersion.setName(DatabaseNamesConstants.ORACLE122);
+                }
+            } else if (majorVersion >= 23) {
+                if (isOracle122Compatible(connection)) {
+                    nameVersion.setName(DatabaseNamesConstants.ORACLE23);
                 }
             }
         }

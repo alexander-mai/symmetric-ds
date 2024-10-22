@@ -54,6 +54,7 @@ public class ExtractDataReader implements IDataReader {
     protected IDatabasePlatform platform;
     protected List<IExtractDataReaderSource> sourcesToUse;
     protected IExtractDataReaderSource currentSource;
+    protected List<IExtractDataFilter> filters;
     protected Batch batch;
     protected Table table;
     protected CsvData data;
@@ -61,19 +62,19 @@ public class ExtractDataReader implements IDataReader {
     protected boolean isSybaseASE;
     protected boolean isUsingUnitypes;
 
-
     public ExtractDataReader(IDatabasePlatform platform, IExtractDataReaderSource source) {
         this.sourcesToUse = new ArrayList<IExtractDataReaderSource>();
         this.sourcesToUse.add(source);
         this.platform = platform;
         this.isSybaseASE = platform.getName().equals(DatabaseNamesConstants.ASE);
     }
-    
-    public ExtractDataReader(IDatabasePlatform platform, IExtractDataReaderSource source, Boolean isUsingUnitypes) {
+
+    public ExtractDataReader(IDatabasePlatform platform, IExtractDataReaderSource source, List<IExtractDataFilter> filters, boolean isUsingUnitypes) {
         this.sourcesToUse = new ArrayList<IExtractDataReaderSource>();
         this.sourcesToUse.add(source);
         this.platform = platform;
-        this.isUsingUnitypes=isUsingUnitypes;
+        this.filters = filters;
+        this.isUsingUnitypes = isUsingUnitypes;
         this.isSybaseASE = platform.getName().equals(DatabaseNamesConstants.ASE);
     }
 
@@ -131,17 +132,39 @@ public class ExtractDataReader implements IDataReader {
     }
 
     public CsvData nextData() {
+        CsvData nextData = nextDataFromSource();
+        if (nextData != null && filters != null && filters.size() != 0) {
+            boolean shouldExtract = true;
+            while (shouldExtract) {
+                for (IExtractDataFilter filter : filters) {
+                    shouldExtract &= filter.filterData(dataContext, batch, table, nextData);
+                }
+                if (shouldExtract) {
+                    break;
+                } else {
+                    nextData = nextDataFromSource();
+                    shouldExtract = nextData != null;
+                }
+            }
+        }
+        return nextData;
+    }
+
+    protected CsvData nextDataFromSource() {
         if (this.table != null) {
             if (this.data == null) {
                 this.data = this.currentSource.next();
             }
             if (data == null) {
                 closeCurrentSource();
+            } else if (data.getDataEventType() == null) {
+                // empty batch from reload
+                data = null;
             } else {
                 Table targetTable = this.currentSource.getTargetTable();
                 if (targetTable != null && targetTable.equals(this.table)) {
                     data = enhanceWithLobsFromSourceIfNeeded(this.currentSource.getSourceTable(), data);
-                    if (isSybaseASE && isUsingUnitypes) {
+                    if (isSybaseASE && isUsingUnitypes && !this.currentSource.requiresLobsSelectedFromSource(data)) {
                         data = convertUtf16toUTF8(this.currentSource.getSourceTable(), data);
                     }
                 } else {
@@ -203,7 +226,22 @@ public class ExtractDataReader implements IDataReader {
                         if (platform.isBlob(lobColumn.getMappedTypeCode())) {
                             byte[] binaryData = row.getBytes(lobColumn.getName());
                             if (binaryData != null) {
-                                if (batch.getBinaryEncoding() == BinaryEncoding.BASE64) {
+                                if (isUniType(lobColumn.getJdbcTypeName())) {
+                                    try {
+                                        if (lobColumn.getJdbcTypeName().equalsIgnoreCase("unitext")) {
+                                            valueForCsv = row.getString(lobColumn.getName());
+                                        } else {
+                                            String utf16String = null;
+                                            String baseString = row.getString(lobColumn.getName());
+                                            baseString = "fffe" + baseString;
+                                            utf16String = new String(Hex.decodeHex(baseString), "UTF-16");
+                                            String utf8String = new String(utf16String.getBytes(Charset.defaultCharset()), Charset.defaultCharset());
+                                            valueForCsv = utf8String;
+                                        }
+                                    } catch (UnsupportedEncodingException | DecoderException e) {
+                                        e.printStackTrace();
+                                    }
+                                } else if (batch.getBinaryEncoding() == BinaryEncoding.BASE64) {
                                     valueForCsv = new String(Base64.encodeBase64(binaryData), Charset.defaultCharset());
                                 } else if (batch.getBinaryEncoding() == BinaryEncoding.HEX) {
                                     valueForCsv = new String(Hex.encodeHex(binaryData));
@@ -224,7 +262,7 @@ public class ExtractDataReader implements IDataReader {
         }
         return data;
     }
-    
+
     protected CsvData convertUtf16toUTF8(Table table, CsvData data) {
         if (data.getDataEventType() == DataEventType.UPDATE || data.getDataEventType() == DataEventType.INSERT) {
             List<Column> uniColumns = getUniColumns(table);
@@ -238,25 +276,32 @@ public class ExtractDataReader implements IDataReader {
                 ISqlTemplate sqlTemplate = platform.getSqlTemplate();
                 Object[] args = new Object[pkColumns.length];
                 for (int i = 0; i < pkColumns.length; i++) {
-                    args[i] = columnDataMap.get(pkColumns[i].getName());
+                    if (pkColumns[i].getJdbcTypeName() != null && (isUniType(pkColumns[i].getJdbcTypeName()))) {
+                        String utf16String = null;
+                        String baseString = (String) columnDataMap.get(pkColumns[i].getName());
+                        baseString = "fffe" + baseString;
+                        try {
+                            utf16String = new String(Hex.decodeHex(baseString), "UTF-16");
+                        } catch (UnsupportedEncodingException | DecoderException e) {
+                            e.printStackTrace();
+                        }
+                        String utf8String = new String(utf16String.getBytes(Charset.defaultCharset()), Charset.defaultCharset());
+                        args[i] = utf8String;
+                    } else {
+                        args[i] = columnDataMap.get(pkColumns[i].getName());
+                    }
                 }
                 String sql = buildSelect(table, uniColumns, pkColumns);
                 Row row = sqlTemplate.queryForRow(sql, args);
-
                 if (row != null) {
                     for (Column uniColumn : uniColumns) {
                         try {
                             int index = ArrayUtils.indexOf(columnNames, uniColumn.getName());
-                            if (rowData[index] != null) {
+                            if (rowData[index] != null && !uniColumn.getJdbcTypeName().equalsIgnoreCase("unitext")) {
                                 String utf16String = null;
-                                if(batch.getChannelId().equalsIgnoreCase("reload")) {
-                                    utf16String = new String(Hex.decodeHex(rowData[index]), "UTF-16");
-                                } else {
-                                    String baseString = rowData[index];
-                                    baseString = "fffe" + baseString;
-                                    utf16String = new String(Hex.decodeHex(baseString), "UTF-16");
-                                }
-
+                                String baseString = rowData[index];
+                                baseString = "fffe" + baseString;
+                                utf16String = new String(Hex.decodeHex(baseString), "UTF-16");
                                 String utf8String = new String(utf16String.getBytes(Charset.defaultCharset()), Charset.defaultCharset());
                                 rowData[index] = utf8String;
                             }
@@ -270,7 +315,7 @@ public class ExtractDataReader implements IDataReader {
         }
         return data;
     }
-    
+
     public List<Column> getUniColumns(Table table) {
         List<Column> uniColumns = new ArrayList<Column>(1);
         Column[] allColumns = table.getColumns();
@@ -281,7 +326,7 @@ public class ExtractDataReader implements IDataReader {
         }
         return uniColumns;
     }
-    
+
     public boolean isUniType(String type) {
         return type.equalsIgnoreCase("UNITEXT") || type.equalsIgnoreCase("UNICHAR") || type.equalsIgnoreCase("UNIVARCHAR");
     }
@@ -294,6 +339,8 @@ public class ExtractDataReader implements IDataReader {
             if ("XMLTYPE".equalsIgnoreCase(lobColumn.getJdbcTypeName()) && 2009 == lobColumn.getJdbcTypeCode()) {
                 sql.append("extract(").append(quote).append(lobColumn.getName()).append(quote);
                 sql.append(", '/').getClobVal()");
+            } else if (isUniType(lobColumn.getJdbcTypeName()) && !lobColumn.getJdbcTypeName().equalsIgnoreCase("unitext")) {
+                sql.append("bintostr(convert(varbinary(16384)," + lobColumn.getName() + ")) as " + lobColumn.getName());
             } else {
                 sql.append(quote).append(lobColumn.getName()).append(quote);
             }
@@ -332,6 +379,8 @@ public class ExtractDataReader implements IDataReader {
                     } else {
                         row.put(lobColumn.getName(), "");
                     }
+                } else {
+                    row.put(lobColumn.getName(), null);
                 }
             }
         }

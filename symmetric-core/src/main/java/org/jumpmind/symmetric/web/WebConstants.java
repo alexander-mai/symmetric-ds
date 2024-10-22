@@ -46,8 +46,13 @@ public class WebConstants {
     public static final int SC_AUTH_EXPIRED = 669;
     public static final int SC_SERVICE_UNAVAILABLE = 660;
     public static final int SC_SERVICE_BUSY = 670;
+    public static final int SC_SERVICE_NOT_READY = 671;
     public static final int SC_SERVICE_ERROR = 601;
     public static final int SC_NO_RESERVATION = 604;
+    public static final int SC_ALREADY_CONNECTED = 605;
+    public static final int SC_NO_ENGINE = 602;
+    public static final int SC_BAD_REQUEST = 603;
+    public static final int SC_INTERNAL_ERROR = 600;
     public static final int SC_NO_CONTENT = 204;
     public static final int SC_OK = 200;
     public static final String ACK_BATCH_NAME = "batch-";
@@ -102,4 +107,42 @@ public class WebConstants {
     public static final String REG_PASSWORD = "regPassword";
     public static final String PUSH_REGISTRATION = "pushRegistration";
     public static final String API_KEY_HEADER = "X-REST-API-KEY";
+
+    public static String getHttpMessage(int httpCode) {
+        String httpMessage = null;
+        if (httpCode == REGISTRATION_NOT_OPEN) {
+            httpMessage = "Registration is not open";
+        } else if (httpCode == REGISTRATION_REQUIRED) {
+            httpMessage = "Registration is required";
+        } else if (httpCode == REGISTRATION_PENDING) {
+            httpMessage = "Registration is pending";
+        } else if (httpCode == INITIAL_LOAD_PENDING) {
+            httpMessage = "Initial load is pending";
+        } else if (httpCode == SYNC_DISABLED) {
+            httpMessage = "Sync is disabled";
+        } else if (httpCode == SC_FORBIDDEN) {
+            httpMessage = "Bad node password";
+        } else if (httpCode == SC_AUTH_EXPIRED) {
+            httpMessage = "Session expired";
+        } else if (httpCode == SC_SERVICE_UNAVAILABLE) {
+            httpMessage = "Service is unavailable";
+        } else if (httpCode == SC_SERVICE_BUSY) {
+            httpMessage = "Service is busy";
+        } else if (httpCode == SC_SERVICE_ERROR) {
+            httpMessage = "Service internal error";
+        } else if (httpCode == SC_NO_RESERVATION) {
+            httpMessage = "Missing reservation";
+        } else if (httpCode == SC_ALREADY_CONNECTED) {
+            httpMessage = "Duplicate connection";
+        } else if (httpCode == SC_NO_ENGINE) {
+            httpMessage = "No engine found";
+        } else if (httpCode == SC_BAD_REQUEST) {
+            httpMessage = "URI handler not found";
+        } else if (httpCode == SC_INTERNAL_ERROR) {
+            httpMessage = "Server internal error";
+        } else if (httpCode == SC_NO_CONTENT) {
+            httpMessage = "No content";
+        }
+        return httpMessage;
+    }
 }

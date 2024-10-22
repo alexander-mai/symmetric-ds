@@ -22,9 +22,9 @@ package org.jumpmind.symmetric.web;
 
 import java.io.IOException;
 
-import javax.servlet.ServletException;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 
 import org.apache.commons.lang3.StringUtils;
 import org.jumpmind.symmetric.ISymmetricEngine;
@@ -47,7 +47,7 @@ public class FileSyncPullUriHandler extends AbstractUriHandler {
             ServletException {
         String nodeId = ServletUtils.getParameter(req, WebConstants.NODE_ID);
         if (StringUtils.isBlank(nodeId)) {
-            ServletUtils.sendError(res, HttpServletResponse.SC_BAD_REQUEST,
+            ServletUtils.sendError(res, WebConstants.SC_BAD_REQUEST,
                     "Node must be specified");
             return;
         } else {

@@ -54,11 +54,9 @@ public class ConfigurationChangedHelper {
     private static final String CTX_KEY_FLUSH_EXTENSIONS_NEEDED = "FlushExtensions." + SUFFIX;
     private static final String CTX_KEY_FLUSH_GROUPLETS_NEEDED = "FlushGrouplets." + SUFFIX;
     private static final String CTX_KEY_FLUSH_LOADFILTERS_NEEDED = "FlushLoadFilters." + SUFFIX;
-    private static final String CTX_KEY_FLUSH_MONITORS_NEEDED = "FlushMonitors." + SUFFIX;
     private static final String CTX_KEY_FLUSH_NODES_NEEDED = "FlushNodes." + SUFFIX;
     private static final String CTX_KEY_FLUSH_NODE_GROUP_LINKS_NEEDED = "FlushNodeGroups." + SUFFIX;
     private static final String CTX_KEY_FLUSH_NODE_SECURITY_NEEDED = "FlushNodeSecurity." + SUFFIX;
-    private static final String CTX_KEY_FLUSH_NOTIFICATIONS_NEEDED = "FlushNotifications." + SUFFIX;
     private static final String CTX_KEY_FLUSH_ROUTERS_NEEDED = "FlushRouters." + SUFFIX;
     private static final String CTX_KEY_FLUSH_PARAMETERS_NEEDED = "FlushParameters." + SUFFIX;
     private static final String CTX_KEY_FLUSH_TRANSFORMS_NEEDED = "FlushTransforms." + SUFFIX;
@@ -94,16 +92,14 @@ public class ConfigurationChangedHelper {
         updateContext(TableConstants.SYM_GROUPLET_LINK, table, context, CTX_KEY_FLUSH_GROUPLETS_NEEDED, CTX_KEY_RESYNC_NEEDED);
         updateContext(TableConstants.SYM_JOB, table, context, CTX_KEY_RESTART_JOB_MANAGER_NEEDED);
         updateContext(TableConstants.SYM_LOAD_FILTER, table, context, CTX_KEY_FLUSH_LOADFILTERS_NEEDED);
-        updateContext(TableConstants.SYM_MONITOR, table, context, CTX_KEY_FLUSH_MONITORS_NEEDED);
         updateContext(TableConstants.SYM_NODE_GROUP_LINK, table, context, CTX_KEY_FLUSH_NODE_GROUP_LINKS_NEEDED, CTX_KEY_FLUSH_TRANSFORMS_NEEDED,
                 CTX_KEY_RESYNC_NEEDED);
-        updateContext(TableConstants.SYM_NOTIFICATION, table, context, CTX_KEY_FLUSH_NOTIFICATIONS_NEEDED);
         updateContext(TableConstants.SYM_PARAMETER, table, context, CTX_KEY_FLUSH_PARAMETERS_NEEDED);
         updateContext(TableConstants.SYM_ROUTER, table, context, CTX_KEY_RESYNC_NEEDED, CTX_KEY_FLUSH_ROUTERS_NEEDED);
         updateContext(TableConstants.SYM_TRANSFORM_TABLE, table, context, CTX_KEY_FLUSH_TRANSFORMS_NEEDED);
         updateContext(TableConstants.SYM_TRANSFORM_COLUMN, table, context, CTX_KEY_FLUSH_TRANSFORMS_NEEDED);
         updateContext(TableConstants.SYM_TRIGGER_ROUTER_GROUPLET, table, context, CTX_KEY_FLUSH_GROUPLETS_NEEDED, CTX_KEY_RESYNC_NEEDED);
-        if (matchesTable(table, TableConstants.SYM_PARAMETER) && matchesExternalId(table, data, "external_id")
+        if (matchesTable(table, TableConstants.SYM_PARAMETER) && matchesDmlEventType(data) && matchesExternalId(table, data, "external_id")
                 && matchesNodeGroupId(table, data, "node_group_id")) {
             String jobName = JobDefinition.getJobNameFromData(data);
             if (jobName != null) {
@@ -138,6 +134,15 @@ public class ConfigurationChangedHelper {
         }
     }
 
+    private boolean matchesDmlEventType(CsvData data) {
+        boolean ret = false;
+        if (data.getDataEventType().equals(DataEventType.INSERT) || data.getDataEventType().equals(DataEventType.UPDATE) || data.getDataEventType().equals(
+                DataEventType.DELETE)) {
+            ret = true;
+        }
+        return ret;
+    }
+
     public void contextCommitted(Context context) {
         if (context.remove(CTX_KEY_FLUSH_CHANNELS_NEEDED) != null) {
             log.info("Clearing cache for channels");
@@ -159,10 +164,6 @@ public class ConfigurationChangedHelper {
             log.info("Clearing cache for load filters");
             engine.getLoadFilterService().clearCache();
         }
-        if (context.remove(CTX_KEY_FLUSH_MONITORS_NEEDED) != null) {
-            log.info("Clearing cache for monitors");
-            engine.getMonitorService().flushMonitorCache();
-        }
         if (context.remove(CTX_KEY_FLUSH_NODES_NEEDED) != null) {
             log.info("Clearing cache for nodes");
             engine.getNodeService().flushNodeCache();
@@ -176,10 +177,6 @@ public class ConfigurationChangedHelper {
         if (context.remove(CTX_KEY_FLUSH_NODE_SECURITY_NEEDED) != null) {
             log.info("Clearing cache for node security");
             engine.getNodeService().flushNodeAuthorizedCache();
-        }
-        if (context.remove(CTX_KEY_FLUSH_NOTIFICATIONS_NEEDED) != null) {
-            log.info("Clearing cache for notifications");
-            engine.getMonitorService().flushNotificationCache();
         }
         if (context.remove(CTX_KEY_FLUSH_PARAMETERS_NEEDED) != null) {
             log.info("Clearing cache for parameters");
@@ -338,13 +335,13 @@ public class ConfigurationChangedHelper {
         return set;
     }
 
-    private String getColumnValue(Table table, CsvData data, String name) {
+    public static String getColumnValue(Table table, CsvData data, String name) {
         String[] values = data.getParsedData(CsvData.ROW_DATA);
         if (values == null) {
             values = data.getParsedData(CsvData.PK_DATA);
         }
         int index = table.getColumnIndex(name);
-        if (values != null && index < values.length) {
+        if (index >= 0 && values != null && index < values.length) {
             return values[index];
         }
         return null;
@@ -366,7 +363,7 @@ public class ConfigurationChangedHelper {
         context.put(CTX_KEY_RESYNC_NEEDED, true);
     }
 
-    public Set<Node> filterNodes(Set<Node> nodes, String tableName) {
-        return versionHelper.filterNodes(nodes, tableName);
+    public Set<Node> filterNodes(Set<Node> nodes, String tableName, Map<String, String> columnValues) {
+        return versionHelper.filterNodes(nodes, tableName, columnValues);
     }
 }

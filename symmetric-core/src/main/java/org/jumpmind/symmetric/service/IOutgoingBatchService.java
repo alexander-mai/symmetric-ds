@@ -37,6 +37,8 @@ import org.jumpmind.symmetric.model.OutgoingBatches;
 public interface IOutgoingBatchService {
     public List<String> getNodesInError();
 
+    public void updateOutgoingError(long batchId, String nodeId);
+
     public void markAllAsSentForNode(String nodeId, boolean includeConfigChannel);
 
     public void markAllConfigAsSentForNode(String nodeId);
@@ -116,7 +118,7 @@ public interface IOutgoingBatchService {
 
     public long countUnsentRowsByTargetNode(String nodeId);
 
-    public int countUnsentBatchesByTargetNode(String nodeId);
+    public int countUnsentBatchesByTargetNode(String nodeId, boolean includeHeartbeats);
 
     public List<OutgoingBatchSummary> findOutgoingBatchSummary(OutgoingBatch.Status... statuses);
 

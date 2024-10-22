@@ -36,6 +36,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.lang3.StringUtils;
@@ -412,6 +413,9 @@ public class NodeCommunicationService extends AbstractService implements INodeCo
             case PUSH:
                 threadCountParameter = ParameterConstants.PUSH_THREAD_COUNT_PER_SERVER;
                 break;
+            case ROUTE:
+                threadCountParameter = ParameterConstants.ROUTING_THREAD_COUNT_PER_SERVER;
+                break;
             case OFFLN_PULL:
                 threadCountParameter = ParameterConstants.OFFLINE_PULL_THREAD_COUNT_PER_SERVER;
                 break;
@@ -430,14 +434,23 @@ public class NodeCommunicationService extends AbstractService implements INodeCo
             case EXTRACT:
                 threadCountParameter = ParameterConstants.INITIAL_LOAD_EXTRACT_THREAD_COUNT_PER_SERVER;
                 break;
+            case COMPARE:
+                threadCountParameter = ParameterConstants.COMPARE_THREAD_PER_SERVER_COUNT;
+                break;
             default:
                 break;
         }
         int threadCount = parameterService.getInt(threadCountParameter, 1);
         if (service != null && service.getCorePoolSize() != threadCount) {
-            log.info("{} has changed from {} to {}.  Restarting thread pool", new Object[] { threadCountParameter, service.getCorePoolSize(), threadCount });
-            stop();
-            service = null;
+            synchronized (this) {
+                if (service != null) {
+                    log.info("{} has changed from {} to {}.  Restarting thread pool for {}", threadCountParameter, service.getCorePoolSize(), threadCount,
+                            communicationType.name());
+                    service.shutdown();
+                    executors.remove(communicationType);
+                    service = null;
+                }
+            }
         }
         if (service == null) {
             synchronized (this) {
@@ -453,6 +466,8 @@ public class NodeCommunicationService extends AbstractService implements INodeCo
                     }
                     service = (ThreadPoolExecutor) Executors.newFixedThreadPool(threadCount,
                             new ChannelThreadFactory(parameterService.getEngineName(), communicationType.name()));
+                    service.setKeepAliveTime(1, TimeUnit.MINUTES);
+                    service.allowCoreThreadTimeOut(true);
                     executors.put(communicationType, service);
                 }
             }
@@ -474,6 +489,9 @@ public class NodeCommunicationService extends AbstractService implements INodeCo
             case PUSH:
                 parameter = ParameterConstants.PUSH_LOCK_TIMEOUT_MS;
                 break;
+            case ROUTE:
+                parameter = ParameterConstants.ROUTING_LOCK_TIMEOUT_MS;
+                break;
             case OFFLN_PULL:
                 parameter = ParameterConstants.OFFLINE_PULL_LOCK_TIMEOUT_MS;
                 break;
@@ -491,6 +509,9 @@ public class NodeCommunicationService extends AbstractService implements INodeCo
             case FILE_XTRCT:
             case EXTRACT:
                 parameter = ParameterConstants.INITIAL_LOAD_EXTRACT_TIMEOUT_MS;
+                break;
+            case COMPARE:
+                parameter = ParameterConstants.COMPARE_LOCK_TIMEOUT_MS;
                 break;
             default:
                 break;
@@ -574,21 +595,25 @@ public class NodeCommunicationService extends AbstractService implements INodeCo
         int attempts = 1;
         do {
             try {
-                long millis = System.currentTimeMillis() - ts;
-                nodeCommunication.setLockTime(null);
-                nodeCommunication.setLastLockMillis(millis);
-                if (failed) {
-                    nodeCommunication.setFailCount(nodeCommunication.getFailCount() + 1);
-                    nodeCommunication.setTotalFailCount(nodeCommunication.getTotalFailCount() + 1);
-                    nodeCommunication.setTotalFailMillis(nodeCommunication.getTotalFailMillis() + millis);
+                if (nodeCommunication.isDeleteOnUnlock()) {
+                    delete(nodeCommunication);
                 } else {
-                    nodeCommunication.setSuccessCount(nodeCommunication.getSuccessCount() + 1);
-                    nodeCommunication.setTotalSuccessCount(nodeCommunication.getTotalSuccessCount() + 1);
-                    nodeCommunication.setTotalSuccessMillis(nodeCommunication.getTotalSuccessMillis() + millis);
-                    nodeCommunication.setFailCount(0);
-                }
-                if (clusterService.isClusteringEnabled()) {
-                    save(nodeCommunication, false);
+                    long millis = System.currentTimeMillis() - ts;
+                    nodeCommunication.setLockTime(null);
+                    nodeCommunication.setLastLockMillis(millis);
+                    if (failed) {
+                        nodeCommunication.setFailCount(nodeCommunication.getFailCount() + 1);
+                        nodeCommunication.setTotalFailCount(nodeCommunication.getTotalFailCount() + 1);
+                        nodeCommunication.setTotalFailMillis(nodeCommunication.getTotalFailMillis() + millis);
+                    } else {
+                        nodeCommunication.setSuccessCount(nodeCommunication.getSuccessCount() + 1);
+                        nodeCommunication.setTotalSuccessCount(nodeCommunication.getTotalSuccessCount() + 1);
+                        nodeCommunication.setTotalSuccessMillis(nodeCommunication.getTotalSuccessMillis() + millis);
+                        nodeCommunication.setFailCount(0);
+                    }
+                    if (clusterService.isClusteringEnabled()) {
+                        save(nodeCommunication, false);
+                    }
                 }
                 unlocked = true;
                 if (attempts > 1) {
@@ -607,7 +632,6 @@ public class NodeCommunicationService extends AbstractService implements INodeCo
                 AppUtils.sleep(sleepTime);
                 attempts++;
             }
-            ;
         } while (!unlocked);
     }
 

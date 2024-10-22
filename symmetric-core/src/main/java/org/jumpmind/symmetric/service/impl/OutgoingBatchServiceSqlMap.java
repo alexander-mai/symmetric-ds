@@ -107,6 +107,8 @@ public class OutgoingBatchServiceSqlMap extends AbstractSqlMap {
         putSql("countOutgoingRowsByTargetNodeSql",
                 "select sum(data_row_count) as row_count from $(outgoing_batch) where node_id = ? and channel_id <> 'heartbeat' and status in ('ER','RQ','NE','QY','RT')");
         putSql("countOutgoingBatchesByTargetNodeSql",
+                "select count(*) as row_count from $(outgoing_batch) where node_id = ? and status != 'OK'");
+        putSql("countOutgoingBatchesByTargetNodeExcludingHeartbeatsSql",
                 "select count(*) as row_count from $(outgoing_batch) where node_id = ? and channel_id <> 'heartbeat' and status in ('ER','RQ','NE','QY','RT')");
         putSql("countOutgoingBatchesErrorsSql",
                 "select count(*) from $(outgoing_batch) where error_flag=1");
@@ -157,7 +159,7 @@ public class OutgoingBatchServiceSqlMap extends AbstractSqlMap {
         putSql("whereStatusAndNodeAndChannelGroupByStatusSql",
                 " where b.status in (:STATUS_LIST) and b.node_id = ? and b.channel_id = ? group by b.status, b.node_id order by oldest_batch_time asc   ");
         putSql("updateOutgoingBatchesStatusSql",
-                "update $(outgoing_batch) set status=? where status = ?   ");
+                "update $(outgoing_batch) set status = ?, ignore_count = 1 where status = ?");
         putSql("deleteOutgoingBatchesForNodeSql",
                 "delete from $(outgoing_batch) where node_id=? and channel_id=? and batch_id < "
                         + "(select max(batch_id) from $(outgoing_batch) where node_id=? and channel_id=?) ");
@@ -169,6 +171,8 @@ public class OutgoingBatchServiceSqlMap extends AbstractSqlMap {
                         + "   last_update_hostname, ?, create_time, 'copy' from $(outgoing_batch) where node_id=? and channel_id=? and batch_id > ?)     ");
         putSql("getAllBatchesSql", "select batch_id from $(outgoing_batch)");
         putSql("whereInProgressStatusSql", "where status in (?, ?, ?, ?, ?) ");
+        putSql("updateOutgoingError",
+                "update $(outgoing_error) set resolve_ignore = 1 where batch_id = ? and node_id = ?");
         putSql("updateOutgoingSetupBatchStatusByStatus",
                 "update $(outgoing_batch) set status=?, last_update_time=?, last_update_hostname=? where node_id=? and load_id=? and status=? and batch_id < ?");
         putSql("updateOutgoingLoadBatchStatusByStatus",

@@ -23,6 +23,7 @@ package org.jumpmind.symmetric.file;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -64,6 +65,7 @@ public class FileSyncZipDataWriter implements IDataWriter {
     private static final Logger log = LoggerFactory.getLogger(FileSyncZipDataWriter.class);
     protected long byteCount;
     protected long maxBytesToSync;
+    protected int compressionLevel;
     protected IFileSyncService fileSyncService;
     protected IStagedResource stagedResource;
     protected ZipOutputStream zos;
@@ -75,10 +77,12 @@ public class FileSyncZipDataWriter implements IDataWriter {
     protected INodeService nodeService;
     protected IExtensionService extensionService;
     protected IConfigurationService configurationService;
+    protected boolean batchInError;
 
-    public FileSyncZipDataWriter(long maxBytesToSync, IFileSyncService fileSyncService,
+    public FileSyncZipDataWriter(long maxBytesToSync, int compressionLevel, IFileSyncService fileSyncService,
             INodeService nodeService, IStagedResource stagedResource, IExtensionService extensionService, IConfigurationService configurationService) {
         this.maxBytesToSync = maxBytesToSync;
+        this.compressionLevel = compressionLevel;
         this.fileSyncService = fileSyncService;
         this.stagedResource = stagedResource;
         this.nodeService = nodeService;
@@ -178,11 +182,13 @@ public class FileSyncZipDataWriter implements IDataWriter {
             if (!inError) {
                 if (zos == null) {
                     zos = new ZipOutputStream(stagedResource.getOutputStream());
+                    zos.setLevel(compressionLevel);
                 }
                 FileSyncZipScript script = createFileSyncZipScript(batch.getTargetNodeId());
                 script.buildScriptStart(batch);
                 Map<String, LastEventType> entriesByLastEventType = new HashMap<String, LastEventType>();
                 Map<String, String> entriesByLastRouterId = new HashMap<String, String>();
+                List<IFileSourceTracker> fileTrackers = extensionService.getExtensionPointList(IFileSourceTracker.class);
                 for (FileSnapshot snapshot : snapshotEvents) {
                     FileTriggerRouter triggerRouter = fileSyncService.getFileTriggerRouter(
                             snapshot.getTriggerId(), snapshot.getRouterId(), false);
@@ -201,7 +207,19 @@ public class FileSyncZipDataWriter implements IDataWriter {
                             entryName.append(snapshot.getRelativeDir()).append("/");
                         }
                         entryName.append(snapshot.getFileName());
-                        File file = fileTrigger.createSourceFile(snapshot);
+                        File file = null;
+                        IFileSourceTracker fileTracker = null;
+                        for (IFileSourceTracker tracker : fileTrackers) {
+                            if (tracker.handlesDir(fileTrigger.getBaseDir())) {
+                                fileTracker = tracker;
+                                break;
+                            }
+                        }
+                        if (fileTracker != null) {
+                            file = fileTracker.createSourceFile(snapshot);
+                        } else {
+                            file = fileTrigger.createSourceFile(snapshot);
+                        }
                         if (file.isDirectory()) {
                             entryName.append("/");
                         }
@@ -224,15 +242,18 @@ public class FileSyncZipDataWriter implements IDataWriter {
                                 if (file.exists()) {
                                     byteCount += file.length();
                                     ZipEntry entry = new ZipEntry(entryName.toString());
-                                    BasicFileAttributes attr = Files.readAttributes(file.toPath(), BasicFileAttributes.class);
-                                    // note: as of 8/21 getting the creation time won't work on unix file systems EVEN IF THEY HAVE EXT4
-                                    // you also cannot set the creation time on unix systems (birth date) using setCreationTime, so this only works for windows
-                                    entry.setCreationTime(attr.creationTime());
+                                    if (fileTracker == null) {
+                                        BasicFileAttributes attr = Files.readAttributes(file.toPath(), BasicFileAttributes.class);
+                                        // note: as of 8/21 getting the creation time won't work on unix file systems EVEN IF THEY HAVE EXT4
+                                        // you also cannot set the creation time on unix systems (birth date) using setCreationTime, so this only works for
+                                        // windows
+                                        entry.setCreationTime(attr.creationTime());
+                                    }
                                     entry.setSize(file.length());
                                     entry.setTime(file.lastModified());
                                     zos.putNextEntry(entry);
                                     if (file.isFile()) {
-                                        try (FileInputStream fis = new FileInputStream(file)) {
+                                        try (InputStream fis = fileTracker != null ? fileTracker.getInputStream(file) : new FileInputStream(file)) {
                                             IOUtils.copy(fis, zos);
                                         }
                                     }
@@ -267,6 +288,7 @@ public class FileSyncZipDataWriter implements IDataWriter {
                 zos.closeEntry();
             }
         } catch (IOException e) {
+            batchInError = true;
             throw new IoException(e);
         }
     }
@@ -284,8 +306,13 @@ public class FileSyncZipDataWriter implements IDataWriter {
             throw new IoException(e);
         } finally {
             if (stagedResource != null) {
-                stagedResource.setState(IStagedResource.State.DONE);
-                stagedResource.close();
+                if (!batchInError) {
+                    stagedResource.setState(IStagedResource.State.DONE);
+                    stagedResource.close();
+                } else {
+                    stagedResource.delete();
+                    batchInError = false;
+                }
             }
         }
     }
@@ -295,11 +322,19 @@ public class FileSyncZipDataWriter implements IDataWriter {
     }
 
     protected FileSyncZipScript createFileSyncZipScript(String targetNodeId) {
+        FileSyncZipScript script = null;
         if (isCClient(targetNodeId)) {
-            return new BashFileSyncZipScript();
+            script = new BashFileSyncZipScript();
         } else {
-            return new BeanShellFileSyncZipScript(extensionService);
+            for (IFileSyncScriptCreator creator : extensionService.getExtensionPointList(IFileSyncScriptCreator.class)) {
+                script = creator.create(targetNodeId);
+                break;
+            }
+            if (script == null) {
+                script = new BeanShellFileSyncZipScript(extensionService);
+            }
         }
+        return script;
     }
 
     protected boolean isCClient(String nodeId) {
