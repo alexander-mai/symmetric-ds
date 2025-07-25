@@ -51,8 +51,10 @@ import org.jumpmind.symmetric.model.Node;
 import org.jumpmind.symmetric.model.NodeChannel;
 import org.jumpmind.symmetric.model.OutgoingBatch;
 import org.jumpmind.symmetric.model.Router;
+import org.jumpmind.symmetric.model.TableReloadRequest;
 import org.jumpmind.symmetric.model.TriggerHistory;
 import org.jumpmind.symmetric.model.TriggerRouter;
+import org.jumpmind.symmetric.route.DefaultDataRouter;
 import org.jumpmind.symmetric.route.IDataRouter;
 import org.jumpmind.symmetric.route.SimpleRouterContext;
 import org.jumpmind.symmetric.util.SymmetricUtils;
@@ -71,6 +73,7 @@ public class SelectFromTableSource extends SelectFromSource {
     protected TriggerRouter triggerRouter;
     protected Map<String, IDataRouter> routers;
     protected IDataRouter dataRouter;
+    protected boolean isDefaultRouter;
     protected ColumnsAccordingToTriggerHistory columnsAccordingToTriggerHistory;
     protected String overrideSelectSql;
     protected boolean initialLoadSelectUsed;
@@ -119,7 +122,7 @@ public class SelectFromTableSource extends SelectFromSource {
         CsvData data = null;
         do {
             data = selectNext();
-        } while (data != null && routingContext != null && !shouldDataBeRouted(data));
+        } while (data != null && routingContext != null && (!isDefaultRouter && !shouldDataBeRouted(data)));
         if (data != null && outgoingBatch != null && !outgoingBatch.isExtractJobFlag()) {
             outgoingBatch.incrementExtractRowCount();
             outgoingBatch.incrementExtractRowCount(data.getDataEventType());
@@ -159,9 +162,12 @@ public class SelectFromTableSource extends SelectFromSource {
                 if (dataRouter == null) {
                     dataRouter = routers.get("default");
                 }
+                isDefaultRouter = dataRouter instanceof DefaultDataRouter;
                 if (routingContext == null) {
-                    NodeChannel channel = batch != null ? configurationService.getNodeChannel(batch.getChannelId(), false)
-                            : new NodeChannel(triggerRouter.getTrigger().getChannelId());
+                    NodeChannel channel = batch != null ? configurationService.getNodeChannel(batch.getChannelId(), false) : null;
+                    if (channel == null) {
+                        channel = new NodeChannel(triggerRouter.getTrigger().getChannelId());
+                    }
                     routingContext = new SimpleRouterContext(batch == null ? null : batch.getTargetNodeId(), channel);
                 }
                 sourceTable = columnsAccordingToTriggerHistory.lookup(triggerRouter.getRouter().getRouterId(), history, false, true, false, false);
@@ -176,12 +182,16 @@ public class SelectFromTableSource extends SelectFromSource {
                     if (fk != null) {
                         Reference[] refs = fk.getReferences();
                         if (refs.length == 1) {
-                            isSelfReferencingFk = true;
-                            selfRefParentColumnName = refs[0].getLocalColumnName();
-                            selfRefChildColumnName = refs[0].getForeignColumnName();
-                            selfRefLevel = 0;
-                            log.info("Ordering rows for table {} using self-referencing foreign key {} -> {}",
-                                    sourceTable.getName(), selfRefParentColumnName, selfRefChildColumnName);
+                            TableReloadRequest loadRequest = dataService.getTableReloadRequest(outgoingBatch.getLoadId());
+                            if (loadRequest == null || !loadRequest.isCreateTable() ||
+                                    !parameterService.is(ParameterConstants.INITIAL_LOAD_DEFER_CREATE_CONSTRAINTS)) {
+                                isSelfReferencingFk = true;
+                                selfRefParentColumnName = refs[0].getLocalColumnName();
+                                selfRefChildColumnName = refs[0].getForeignColumnName();
+                                selfRefLevel = 0;
+                                log.info("Ordering rows for table {} using self-referencing foreign key {} -> {}",
+                                        sourceTable.getName(), selfRefParentColumnName, selfRefChildColumnName);
+                            }
                         } else {
                             log.warn("Unable to order rows for self-referencing foreign key because it contains multiple columns");
                         }
@@ -273,22 +283,26 @@ public class SelectFromTableSource extends SelectFromSource {
         for (IReloadVariableFilter filter : extensionService.getExtensionPointList(IReloadVariableFilter.class)) {
             sql = filter.filterInitalLoadSql(sql, node, targetTable);
         }
-        final String initialLoadSql = sql;
-        final int expectedCommaCount = triggerHistory.getParsedColumnNames().length - 1;
-        final boolean selectedAsCsv = symmetricDialectToUse.getParameterService().is(ParameterConstants.INITIAL_LOAD_CONCAT_CSV_IN_SQL_ENABLED);
-        final boolean objectValuesWillNeedEscaped = !symmetricDialectToUse.getTriggerTemplate().useTriggerTemplateForColumnTemplatesDuringInitialLoad();
-        final boolean[] isColumnPositionUsingTemplate = symmetricDialectToUse.getColumnPositionUsingTemplate(sourceTable, triggerHistory);
-        final boolean checkRowLength = parameterService.is(ParameterConstants.EXTRACT_CHECK_ROW_SIZE, false);
-        final long rowMaxLength = parameterService.getLong(ParameterConstants.EXTRACT_ROW_MAX_LENGTH, 1000000000);
-        boolean returnLobObjects = checkRowLength && sourceTable.containsLobColumns(symmetricDialect.getPlatform()) &&
-                !sourceTable.getNameLowerCase().startsWith(symmetricDialect.getTablePrefix());
+        boolean checkRowLength = parameterService.is(ParameterConstants.EXTRACT_CHECK_ROW_SIZE, false);
+        SelectFromTableOptions options = new SelectFromTableOptions().triggerHistory(triggerHistory).initialLoadSql(sql)
+                .expectedCommaCount(triggerHistory.getParsedColumnNames().length - 1).selectedAsCsv(symmetricDialectToUse.getParameterService()
+                        .is(ParameterConstants.INITIAL_LOAD_CONCAT_CSV_IN_SQL_ENABLED)).maxBatchSize(channel.getMaxBatchSize())
+                .objectValuesWillNeedEscaped(!symmetricDialectToUse.getTriggerTemplate().useTriggerTemplateForColumnTemplatesDuringInitialLoad())
+                .columnPositionUsingTemplate(symmetricDialectToUse.getColumnPositionUsingTemplate(sourceTable, triggerHistory))
+                .checkRowLength(checkRowLength).rowMaxLength(parameterService.getLong(ParameterConstants.EXTRACT_ROW_MAX_LENGTH, 1000000000))
+                .returnLobObjects(checkRowLength && sourceTable.containsLobColumns(symmetricDialect.getPlatform()) && !sourceTable.getNameLowerCase()
+                        .startsWith(symmetricDialect.getTablePrefix()));
         log.debug(sql);
-        cursor = symmetricDialectToUse.getPlatform().getSqlTemplate().queryForCursor(initialLoadSql, new ISqlRowMapper<Data>() {
+        cursor = createCursor(symmetricDialectToUse, options);
+    }
+
+    protected ISqlReadCursor<Data> createCursor(ISymmetricDialect symmetricDialectToUse, SelectFromTableOptions options) {
+        return symmetricDialectToUse.getPlatform().getSqlTemplate().queryForCursor(options.getInitialLoadSql(), new ISqlRowMapper<Data>() {
             public Data mapRow(Row row) {
-                if (checkRowLength) {
+                if (options.isCheckRowLength()) {
                     // Account for double byte characters and encoding
                     long rowSize = row.getLength() * 2;
-                    if (rowSize > rowMaxLength) {
+                    if (rowSize > options.getRowMaxLength()) {
                         StringBuilder pkValues = new StringBuilder();
                         int i = 0;
                         Object[] rowValues = row.values().toArray();
@@ -297,30 +311,31 @@ public class SelectFromTableSource extends SelectFromSource {
                             i++;
                         }
                         log.warn("Extract row max size exceeded, keys [" + pkValues.toString() + "], size=" + rowSize);
-                        Data data = new Data(0, null, "", DataEventType.SQL, triggerHistory.getSourceTableName(), null,
-                                triggerHistory, batch.getChannelId(), null, null);
+                        Data data = new Data(0, null, "", DataEventType.SQL, options.getTriggerHistory().getSourceTableName(), null,
+                                options.getTriggerHistory(), batch.getChannelId(), null, null);
                         return data;
                     }
                 }
                 String csvRow = null;
-                if (selectedAsCsv) {
+                if (options.isSelectedAsCsv()) {
                     csvRow = row.stringValue();
                     int commaCount = StringUtils.countMatches(csvRow, ",");
-                    if (commaCount < expectedCommaCount) {
+                    if (commaCount < options.getExpectedCommaCount()) {
                         throw new SymmetricException(
                                 "The extracted row data did not have the expected (%d) number of columns (actual=%s): %s.  The initial load sql was: %s",
-                                expectedCommaCount, commaCount, csvRow, initialLoadSql);
+                                options.getExpectedCommaCount(), commaCount, csvRow, options.getInitialLoadSql());
                     }
-                } else if (objectValuesWillNeedEscaped) {
-                    csvRow = platform.getCsvStringValue(symmetricDialect.getBinaryEncoding(), sourceTable.getColumns(), row, isColumnPositionUsingTemplate);
+                } else if (options.isObjectValuesWillNeedEscaped()) {
+                    csvRow = platform.getCsvStringValue(symmetricDialect.getBinaryEncoding(), sourceTable.getColumns(), row, options
+                            .isColumnPositionUsingTemplate());
                 } else {
                     csvRow = row.csvValue();
                 }
-                Data data = new Data(0, null, csvRow, DataEventType.INSERT, triggerHistory.getSourceTableName(), null,
-                        triggerHistory, batch.getChannelId(), null, null);
+                Data data = new Data(0, null, csvRow, DataEventType.INSERT, options.getTriggerHistory().getSourceTableName(), null,
+                        options.getTriggerHistory(), batch.getChannelId(), null, null);
                 return data;
             }
-        }, returnLobObjects);
+        }, options.isReturnLobObjects());
     }
 
     public boolean requiresLobsSelectedFromSource(CsvData data) {

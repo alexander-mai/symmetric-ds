@@ -120,15 +120,16 @@ public class MySqlDdlReader extends AbstractJdbcDdlReader {
             if (StringUtils.isNotBlank(extra)) {
                 Column column = table.findColumn(columnName);
                 if (column != null) {
-                    if (supportsGeneratedColumns && column.isGenerated()) {
-                        if (extra.equalsIgnoreCase("DEFAULT_GENERATED")) {
+                    if (column.getMappedTypeCode() == Types.TIMESTAMP && extra.toLowerCase().contains("on update")) {
+                        column.setAutoUpdate(true);
+                        column.setGenerated(false);
+                    } else if (supportsGeneratedColumns && column.isGenerated()) {
+                        if (extra.toUpperCase().contains("DEFAULT_GENERATED")) {
                             column.setGenerated(false);
                             column.setExpressionAsDefaultValue(true);
                         } else if (column.getDefaultValue() == null || column.getDefaultValue().equalsIgnoreCase("NULL")) {
                             column.setDefaultValue(row.getString("generation_expression"));
                         }
-                    } else if (column.getMappedTypeCode() == Types.TIMESTAMP) {
-                        column.setAutoUpdate(extra.toLowerCase().startsWith("on update"));
                     } else if (extra.equalsIgnoreCase("auto_increment")) {
                         column.setAutoIncrement(true);
                     }
@@ -160,6 +161,8 @@ public class MySqlDdlReader extends AbstractJdbcDdlReader {
         if ("YEAR".equals(typeName)) {
             // it is safe to map a YEAR to INTEGER
             return Types.INTEGER;
+        } else if ("INT UNSIGNED".equals(typeName)) {
+            return Types.BIGINT;
         } else if (typeName != null && typeName.endsWith("TEXT")) {
             String catalog = (String) values.get("TABLE_CAT");
             String tableName = (String) values.get("TABLE_NAME");
@@ -181,6 +184,8 @@ public class MySqlDdlReader extends AbstractJdbcDdlReader {
                 return convertTextToLob ? Types.BLOB : Types.LONGVARCHAR;
             }
             return super.mapUnknownJdbcTypeForColumn(values);
+        } else if (type != null && type == Types.OTHER && "UUID".equalsIgnoreCase("UUID")) {
+            return Types.VARCHAR;
         } else if (type != null && type == Types.OTHER) {
             return Types.LONGVARCHAR;
         } else {
@@ -218,6 +223,15 @@ public class MySqlDdlReader extends AbstractJdbcDdlReader {
                 column.getJdbcTypeName().equalsIgnoreCase(TypeMap.LINESTRING) ||
                 column.getJdbcTypeName().equalsIgnoreCase(TypeMap.POLYGON)) {
             column.setJdbcTypeName(TypeMap.GEOMETRY);
+        }
+        if ("UUID".equalsIgnoreCase(column.getJdbcTypeName())) {
+            column.setSize("36");
+            PlatformColumn platformColumn = column.getPlatformColumns().get(platform.getName());
+            if (platformColumn != null) {
+                if ("UUID".equalsIgnoreCase(platformColumn.getType())) {
+                    platformColumn.setSize(-1);
+                }
+            }
         }
         return column;
     }

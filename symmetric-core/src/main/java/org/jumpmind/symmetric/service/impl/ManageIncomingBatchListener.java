@@ -29,6 +29,9 @@ import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.zip.ZipException;
 
+import javax.crypto.BadPaddingException;
+import javax.crypto.IllegalBlockSizeException;
+
 import org.jumpmind.db.model.Table;
 import org.jumpmind.db.sql.ISqlTemplate;
 import org.jumpmind.db.sql.ISqlTransaction;
@@ -56,10 +59,10 @@ import org.jumpmind.symmetric.model.IncomingError;
 import org.jumpmind.symmetric.model.ProcessInfo;
 import org.jumpmind.symmetric.service.IDataLoaderService;
 import org.jumpmind.symmetric.service.IDataService;
+import org.jumpmind.symmetric.service.IIncomingBatchListener;
 import org.jumpmind.symmetric.service.IIncomingBatchService;
 import org.jumpmind.symmetric.service.IOutgoingBatchService;
 import org.jumpmind.symmetric.service.IParameterService;
-import org.jumpmind.symmetric.service.IIncomingBatchListener;
 import org.jumpmind.symmetric.statistic.IStatisticManager;
 import org.jumpmind.symmetric.transport.TransportException;
 import org.jumpmind.util.ExceptionUtils;
@@ -71,6 +74,7 @@ class ManageIncomingBatchListener implements IDataProcessorListener {
     protected List<IncomingBatch> batchesProcessed = new ArrayList<IncomingBatch>();
     protected IncomingBatch currentBatch;
     protected boolean isNewErrorForCurrentBatch;
+    protected boolean isNewErrorSuppressed;
     protected ProcessInfo processInfo;
     private ISymmetricEngine engine;
     private IParameterService parameterService;
@@ -106,9 +110,8 @@ class ManageIncomingBatchListener implements IDataProcessorListener {
         Batch batch = context.getBatch();
         this.currentBatch = null;
         context.remove("currentBatch");
-        if (parameterService.is(ParameterConstants.DATA_LOADER_ENABLED)
-                || (batch.getChannelId() != null && batch.getChannelId().equals(
-                        Constants.CHANNEL_CONFIG))) {
+        if (parameterService.is(ParameterConstants.DATA_LOADER_ENABLED) || (batch.getChannelId() != null && (batch.getChannelId().equals(
+                Constants.CHANNEL_CONFIG) || batch.getChannelId().equals(Constants.CHANNEL_SYSTEM)))) {
             if (batch.getBatchId() == Constants.VIRTUAL_BATCH_FOR_REGISTRATION && batch.getSourceNodeId() != null) {
                 log.info("Preparing to receive registration from node {} by clearing its outgoing config batches", batch.getSourceNodeId());
                 IOutgoingBatchService outgoingBatchService = engine.getOutgoingBatchService();
@@ -222,18 +225,19 @@ class ManageIncomingBatchListener implements IDataProcessorListener {
                 enableSyncTriggers(context);
                 if (ex instanceof CancellationException) {
                     log.info("Cancelling batch " + this.currentBatch.getNodeBatchId());
+                } else if (ex instanceof ParseException || ExceptionUtils.is(ex, ProtocolException.class, ZipException.class, BadPaddingException.class,
+                        IllegalBlockSizeException.class)) {
+                    this.currentBatch.setSqlCode(ErrorConstants.PROTOCOL_VIOLATION_CODE);
+                    this.currentBatch.setSqlState(ErrorConstants.PROTOCOL_VIOLATION_STATE);
+                    if (isNewErrorForCurrentBatch) {
+                        suppressError();
+                    } else {
+                        log.error(String.format("Failed to parse batch %s", this.currentBatch.getNodeBatchId()), ex);
+                    }
                 } else if (ex instanceof IOException || ex instanceof TransportException
                         || ex instanceof IoException) {
                     log.warn("Failed to load batch " + this.currentBatch.getNodeBatchId(), ex);
                     this.currentBatch.setSqlMessage(ex);
-                } else if (ex instanceof ParseException || ex instanceof ProtocolException || ex.getCause() instanceof ZipException) {
-                    this.currentBatch.setSqlCode(ErrorConstants.PROTOCOL_VIOLATION_CODE);
-                    this.currentBatch.setSqlState(ErrorConstants.PROTOCOL_VIOLATION_STATE);
-                    if (isNewErrorForCurrentBatch) {
-                        this.currentBatch.setErrorFlag(false);
-                    } else {
-                        log.error(String.format("Failed to parse batch %s", this.currentBatch.getNodeBatchId()), ex);
-                    }
                 } else {
                     SQLException se = ExceptionUtils.unwrapSqlException(ex);
                     if (ex instanceof ConflictException) {
@@ -275,7 +279,7 @@ class ManageIncomingBatchListener implements IDataProcessorListener {
                     } else if (isNewErrorForCurrentBatch && (this.currentBatch.getSqlCode() == ErrorConstants.FK_VIOLATION_CODE
                             || this.currentBatch.getSqlCode() == ErrorConstants.DEADLOCK_CODE
                             || this.currentBatch.getSqlCode() == ErrorConstants.CONFLICT_CODE)) {
-                        this.currentBatch.setErrorFlag(false);
+                        suppressError();
                     } else {
                         log.error(String.format("Failed to load batch %s", this.currentBatch.getNodeBatchId()), ex);
                     }
@@ -356,6 +360,12 @@ class ManageIncomingBatchListener implements IDataProcessorListener {
         }
     }
 
+    protected void suppressError() {
+        currentBatch.setErrorFlag(false);
+        currentBatch.setStatus(Status.LD);
+        isNewErrorSuppressed = true;
+    }
+
     public void batchProgressUpdate(DataContext context) {
     }
 
@@ -372,5 +382,9 @@ class ManageIncomingBatchListener implements IDataProcessorListener {
 
     public boolean isNewErrorForCurrentBatch() {
         return isNewErrorForCurrentBatch;
+    }
+
+    public boolean isErrorSuppressed() {
+        return isNewErrorSuppressed;
     }
 }

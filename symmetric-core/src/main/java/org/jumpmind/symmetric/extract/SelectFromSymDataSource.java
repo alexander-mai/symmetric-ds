@@ -22,6 +22,7 @@ package org.jumpmind.symmetric.extract;
 
 import java.sql.Types;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
@@ -30,6 +31,7 @@ import org.jumpmind.db.model.Column;
 import org.jumpmind.db.model.Database;
 import org.jumpmind.db.model.PlatformColumn;
 import org.jumpmind.db.model.Table;
+import org.jumpmind.db.platform.DatabaseInfo;
 import org.jumpmind.db.platform.DatabaseNamesConstants;
 import org.jumpmind.db.sql.DmlStatement;
 import org.jumpmind.db.sql.DmlStatement.DmlType;
@@ -49,6 +51,7 @@ import org.jumpmind.symmetric.model.Data;
 import org.jumpmind.symmetric.model.Node;
 import org.jumpmind.symmetric.model.OutgoingBatch;
 import org.jumpmind.symmetric.model.ProcessInfo;
+import org.jumpmind.symmetric.model.TableReloadRequest;
 import org.jumpmind.symmetric.model.TableReloadStatus;
 import org.jumpmind.symmetric.model.Trigger;
 import org.jumpmind.symmetric.model.TriggerHistory;
@@ -92,6 +95,7 @@ public class SelectFromSymDataSource extends SelectFromSource {
                 || symmetricDialect.getName().equals(DatabaseNamesConstants.MSSQL2016);
     }
 
+    @Override
     public CsvData next() {
         if (cursor == null) {
             cursor = dataService.selectDataFor(batch.getBatchId(), batch.getTargetNodeId(), containsBigLob);
@@ -244,6 +248,32 @@ public class SelectFromSymDataSource extends SelectFromSource {
         return new SelectFromTableSource(engine, outgoingBatch, batch, event);
     }
 
+    /***
+     * Determines whether target table should have transaction logging deferred, until after load is complete (to speed up data import). Batch must be part of a
+     * load request, which requests table manipulation to speed up import.
+     * 
+     * @param batch
+     * @param excludeIndices
+     * @return true for deferring logging for target table
+     */
+    protected boolean evaluateDeferTableLogging(OutgoingBatch batch, boolean deferIndices) {
+        if (!outgoingBatch.isLoadFlag()) {
+            return false;
+        }
+        if (!parameterService.is(ParameterConstants.INITIAL_LOAD_DEFER_TABLE_LOGGING, false)) {
+            return false;
+        }
+        DatabaseInfo databaseInfo = this.platform.getDatabaseInfo();
+        if (databaseInfo == null || !(databaseInfo.isTableLevelLoggingSupported())) {
+            return false;
+        }
+        TableReloadRequest outgoingLoad = dataService.getTableReloadRequest(batch.getLoadId());
+        if (outgoingLoad == null) {
+            return false;
+        }
+        return (deferIndices || outgoingLoad.isCreateTable());
+    }
+
     protected boolean processCreateEvent(TriggerHistory triggerHistory, String routerId, Data data) {
         String oldData = data.getCsvData(CsvData.OLD_DATA);
         boolean sendSchemaExcludeIndices = false;
@@ -265,9 +295,9 @@ public class SelectFromSymDataSource extends SelectFromSource {
         boolean excludeForeignKeys = parameterService.is(ParameterConstants.CREATE_TABLE_WITHOUT_FOREIGN_KEYS, false) | sendSchemaExcludeForeignKeys;
         boolean excludeIndexes = parameterService.is(ParameterConstants.CREATE_TABLE_WITHOUT_INDEXES, false) | sendSchemaExcludeIndices;
         boolean deferConstraints = outgoingBatch.isLoadFlag() && parameterService.is(ParameterConstants.INITIAL_LOAD_DEFER_CREATE_CONSTRAINTS, false);
-        String[] pkData = data.getParsedData(CsvData.PK_DATA);
-        if (pkData != null && pkData.length > 0) {
-            outgoingBatch.setLoadId(Long.parseLong(pkData[0]));
+        boolean deferTableLogging = evaluateDeferTableLogging(outgoingBatch, sendSchemaExcludeIndices);
+        boolean includeTriggerDdl = parameterService.is(ParameterConstants.CREATE_TABLE_INCLUDE_APPLICATION_TRIGGERS, false);
+        if (outgoingBatch.getLoadId() > 0) {
             TableReloadStatus tableReloadStatus = dataService.getTableReloadStatusByLoadIdAndSourceNodeId(outgoingBatch.getLoadId(), engine.getNodeId());
             if (tableReloadStatus != null && tableReloadStatus.isCompleted()) {
                 // Ignore create table (indexes and foreign keys) at end of load if it was cancelled
@@ -287,6 +317,9 @@ public class SelectFromSymDataSource extends SelectFromSource {
         db.setCatalog(copyTargetTable.getCatalog());
         db.setSchema(copyTargetTable.getSchema());
         db.addTable(copyTargetTable);
+        if (deferTableLogging) {
+            copyTargetTable.setLogging(false);
+        }
         if (excludeDefaults) {
             copyTargetTable.removeAllColumnDefaults();
         }
@@ -295,6 +328,13 @@ public class SelectFromSymDataSource extends SelectFromSource {
         }
         if (excludeIndexes || deferConstraints) {
             copyTargetTable.removeAllIndexes();
+        }
+        if (includeTriggerDdl) {
+            List<org.jumpmind.db.model.Trigger> triggers = platform.getDdlReader().getApplicationTriggersForModel(sourceTable.getCatalog(), sourceTable
+                    .getSchema(), sourceTable.getName(), symmetricDialect.getTablePrefix());
+            if (triggers != null && triggers.size() > 0) {
+                copyTargetTable.addTriggers(triggers);
+            }
         }
         if (parameterService.is(ParameterConstants.CREATE_TABLE_WITHOUT_PK_IF_SOURCE_WITHOUT_PK, false)
                 && sourceTable.getPrimaryKeyColumnCount() == 0 && copyTargetTable.getPrimaryKeyColumnCount() > 0) {
@@ -328,10 +368,15 @@ public class SelectFromSymDataSource extends SelectFromSource {
                 }
             }
         }
-        data.setRowData(CsvUtils.escapeCsvData(DatabaseXmlUtil.toXml(db)));
+        String xml = DatabaseXmlUtil.toXml(db);
+        data.setRowData(CsvUtils.escapeCsvData(xml));
+        if (excludeDefaults || excludeForeignKeys || excludeIndexes || deferConstraints || deferTableLogging) {
+            log.debug("Adjusted batch {} channel {} table definition: {}", outgoingBatch.getNodeBatchId(), outgoingBatch.getChannelId(), xml);
+        }
         return true;
     }
 
+    @Override
     public boolean requiresLobsSelectedFromSource(CsvData data) {
         return requiresLobSelectedFromSource;
     }
@@ -346,6 +391,7 @@ public class SelectFromSymDataSource extends SelectFromSource {
         targetTable = null;
     }
 
+    @Override
     public void close() {
         closeCursor();
         if (reloadSource != null) {

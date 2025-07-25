@@ -49,11 +49,15 @@ be compared to a threshold value.
 
 |licenseRows|Percentage from 0 to 100 of rows used out of the maximum number of rows allowed by the license.|
 
+|postgresWal|Size in MB of the backlog of PostgreSQL Write-Ahead Logging (WAL) changes that haven't yet been mined by the PostgreSQL log miner.|
+
+|jvmOutOfMemoryMonitor|Number of times a java.lang.OutOfMemoryError appears in the wrapper.log file within the last 24 hours.|
+
 |jvm64Bit|Value of 0 or 1 indicating whether or not the operating system is 64-bit and the JVM is 32-bit.|✔
 
 |jvmCrash|Number of Java crash files found that were created or modified in the last 24 hours.|✔
 
-|jvmOutOfMemory|Number of times a java.lang.OutOfMemoryError appears in the wrapper.log file.|✔
+|jvmOutOfMemory|Number of times a java.lang.OutOfMemoryError appears in the wrapper.log file within the last 24 hours.|✔
 
 |jvmThreads|Number of threads that are blocked or calling the same method.|✔
 
@@ -65,7 +69,7 @@ be compared to a threshold value.
 
 |channelsDisabled|Number of channels that are disabled.|✔
 
-|maxBatchSize|Largest Max Batch Size for a channel.|✔
+|maxBatchSize|Largest Max Batch Size for a channel (excluding reload channels).|✔
 
 |maxDataToRoute|Largest Max Data to Route for a channel.|✔
 
@@ -90,6 +94,8 @@ be compared to a threshold value.
 |strandedOrExpiredData|Number of stranded or expired data rows detected by the <<Purge Outgoing Job>> and recorded in the <<NODE_HOST_STATS>> table within the past 4 hours.|✔
 
 |unknownCa|Number of nodes that have recently experienced a "PKIX path building failed" error due to an unknown certificate authority. The duration in the past during which this insight checks for errors is determined by the purge.log.summary.retention.minutes parameter, which defaults to 60 minutes.|✔
+
+|formKeys|Value of 0, 1, or 2 indicating whether acknowledgments are failing during a pull due to too many form keys. A value of 0 indicates that there were no failures. A value of 1 indicates that there were failures and SymmetricDS was able to temporarily resolve them. A value of 2 indicates that there were failures and SymmetricDS was unable to resolve them.|✔
 
 |===
 

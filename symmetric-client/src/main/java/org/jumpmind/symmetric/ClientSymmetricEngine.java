@@ -221,16 +221,14 @@ public class ClientSymmetricEngine extends AbstractSymmetricEngine {
                 }
             }
             try {
-                ctx.setConfigLocations(extensionLocations.toArray(new String[extensionLocations
-                        .size()]));
+                ctx.setConfigLocations(extensionLocations.toArray(new String[extensionLocations.size()]));
                 ctx.refresh();
                 this.springContext = ctx;
                 ((ClientExtensionService) this.extensionService).setSpringContext(springContext);
                 this.extensionService.refresh();
             } catch (Exception ex) {
-                log.error(
-                        "Failed to initialize the extension points.  Please fix the problem and restart the server.",
-                        ex);
+                log.error("Failed to initialize the extension points.  Please fix the problem and restart the server.", ex);
+                throw ex;
             }
             if (nodeService instanceof NodeService) {
                 ((NodeService) nodeService).setNodePasswordFilter(extensionService.getExtensionPoint(INodePasswordFilter.class));
@@ -476,6 +474,9 @@ public class ClientSymmetricEngine extends AbstractSymmetricEngine {
             }
         }
         springContext = null;
+        if (platform != null) {
+            platform.shutdown();
+        }
         if (dataSource != null && dataSource instanceof BasicDataSource) {
             try {
                 ((BasicDataSource) dataSource).close();
@@ -484,10 +485,12 @@ public class ClientSymmetricEngine extends AbstractSymmetricEngine {
         }
     }
 
+    @Override
     public List<File> listSnapshots() {
         File snapshotsDir = SnapshotUtil.getSnapshotDirectory(this);
         List<File> files = new ArrayList<>(FileUtils.listFiles(snapshotsDir, new String[] { "zip" }, false));
         Collections.sort(files, new Comparator<File>() {
+            @Override
             public int compare(File o1, File o2) {
                 return -o1.compareTo(o2);
             }
@@ -499,6 +502,7 @@ public class ClientSymmetricEngine extends AbstractSymmetricEngine {
         return springContext;
     }
 
+    @Override
     public File snapshot(IProgressListener listener) {
         return SnapshotUtil.createSnapshot(this, listener);
     }

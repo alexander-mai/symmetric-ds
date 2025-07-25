@@ -34,8 +34,10 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -44,11 +46,14 @@ import org.apache.commons.lang3.StringUtils;
 import org.jumpmind.db.io.DatabaseXmlUtil;
 import org.jumpmind.db.model.Database;
 import org.jumpmind.db.model.Table;
+import org.jumpmind.db.platform.DatabaseInfo;
 import org.jumpmind.db.platform.IDatabasePlatform;
+import org.jumpmind.db.sql.ISqlResultsListener;
 import org.jumpmind.db.sql.ISqlTemplate;
 import org.jumpmind.db.sql.SqlException;
 import org.jumpmind.db.sql.SqlScript;
 import org.jumpmind.db.sql.SqlScriptReader;
+import org.jumpmind.extension.IProcessInfoListener;
 import org.jumpmind.properties.TypedProperties;
 import org.jumpmind.security.ISecurityService;
 import org.jumpmind.security.SecurityServiceFactory;
@@ -56,9 +61,11 @@ import org.jumpmind.security.SecurityServiceFactory.SecurityServiceType;
 import org.jumpmind.symmetric.cache.CacheManager;
 import org.jumpmind.symmetric.cache.ICacheManager;
 import org.jumpmind.symmetric.common.Constants;
+import org.jumpmind.symmetric.common.ContextConstants;
 import org.jumpmind.symmetric.common.ParameterConstants;
 import org.jumpmind.symmetric.common.TableConstants;
 import org.jumpmind.symmetric.config.INodeIdCreator;
+import org.jumpmind.symmetric.db.AbstractSymmetricDialect;
 import org.jumpmind.symmetric.db.ISoftwareUpgradeListener;
 import org.jumpmind.symmetric.db.ISymmetricDialect;
 import org.jumpmind.symmetric.ext.ISymmetricEngineLifecycle;
@@ -72,6 +79,8 @@ import org.jumpmind.symmetric.model.NodeSecurity;
 import org.jumpmind.symmetric.model.NodeStatus;
 import org.jumpmind.symmetric.model.ProcessInfo;
 import org.jumpmind.symmetric.model.ProcessInfo.ProcessStatus;
+import org.jumpmind.symmetric.model.ProcessInfoKey;
+import org.jumpmind.symmetric.model.ProcessType;
 import org.jumpmind.symmetric.model.RemoteNodeStatuses;
 import org.jumpmind.symmetric.security.INodePasswordFilter;
 import org.jumpmind.symmetric.service.IAcknowledgeService;
@@ -140,6 +149,7 @@ import org.jumpmind.symmetric.transport.IConcurrentConnectionManager;
 import org.jumpmind.symmetric.transport.ITransportManager;
 import org.jumpmind.symmetric.transport.TransportManagerFactory;
 import org.jumpmind.symmetric.util.PropertiesUtil;
+import org.jumpmind.symmetric.util.SymmetricUtils;
 import org.jumpmind.util.AppUtils;
 import org.jumpmind.util.ExceptionUtils;
 import org.jumpmind.util.FormatUtils;
@@ -153,8 +163,9 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
     private static final Logger log = LoggerFactory.getLogger(AbstractSymmetricEngine.class);
     private boolean started = false;
     private boolean starting = false;
-    private boolean setup = false;
+    private boolean dbSetupDone = false;
     private boolean isInitialized = false;
+    private boolean isStartupDbParametersDifferentFromLastStart = false;
     private Throwable lastException = null;
     protected String deploymentType;
     protected String deploymentSubType;
@@ -278,9 +289,10 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
         this.platform = createDatabasePlatform(properties);
         this.parameterService = new ParameterService(platform, propertiesFactory,
                 properties.get(ParameterConstants.RUNTIME_CONFIG_TABLE_PREFIX, "sym"));
-        boolean parameterTableExists = this.platform.readTableFromDatabase(null, null,
-                TableConstants.getTableName(properties.get(ParameterConstants.RUNTIME_CONFIG_TABLE_PREFIX), TableConstants.SYM_PARAMETER)) != null;
-        if (parameterTableExists) {
+        Table paramTable = this.platform.readTableFromDatabase(null, null,
+                TableConstants.getTableName(properties.get(ParameterConstants.RUNTIME_CONFIG_TABLE_PREFIX), TableConstants.SYM_PARAMETER));
+        if (paramTable != null) {
+            log.debug("Reading parameters because found {}", paramTable.getFullyQualifiedTableName());
             this.parameterService.setDatabaseHasBeenInitialized(true);
             this.parameterService.rereadParameters();
         }
@@ -320,10 +332,9 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
         this.loadFilterService = new LoadFilterService(this, symmetricDialect);
         this.groupletService = new GroupletService(this);
         this.triggerRouterService = new TriggerRouterService(this);
-        this.outgoingBatchService = new OutgoingBatchService(parameterService, symmetricDialect,
-                nodeService, configurationService, sequenceService, clusterService, extensionService);
+        this.outgoingBatchService = new OutgoingBatchService(this);
         this.routerService = buildRouterService();
-        this.nodeCommunicationService = buildNodeCommunicationService(clusterService, nodeService, parameterService, configurationService, symmetricDialect);
+        this.nodeCommunicationService = buildNodeCommunicationService();
         this.incomingBatchService = new IncomingBatchService(parameterService, symmetricDialect, clusterService);
         this.initialLoadService = new InitialLoadService(this);
         this.dataExtractorService = new DataExtractorService(this);
@@ -332,12 +343,8 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
         this.dataLoaderService = new DataLoaderService(this);
         this.registrationService = new RegistrationService(this);
         this.acknowledgeService = new AcknowledgeService(this);
-        this.pushService = new PushService(parameterService, symmetricDialect,
-                dataExtractorService, acknowledgeService, registrationService, transportManager, nodeService,
-                clusterService, nodeCommunicationService, statisticManager, configurationService, extensionService);
-        this.pullService = new PullService(parameterService, symmetricDialect,
-                nodeService, dataLoaderService, registrationService, clusterService, nodeCommunicationService,
-                configurationService, extensionService, statisticManager);
+        this.pushService = new PushService(this);
+        this.pullService = new PullService(this);
         this.offlinePushService = new OfflinePushService(parameterService, symmetricDialect,
                 dataExtractorService, acknowledgeService, offlineTransportManager, nodeService,
                 clusterService, nodeCommunicationService, statisticManager, configurationService, extensionService);
@@ -392,10 +399,8 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
         return new FileSyncService(this);
     }
 
-    protected INodeCommunicationService buildNodeCommunicationService(IClusterService clusterService, INodeService nodeService,
-            IParameterService parameterService,
-            IConfigurationService configurationService, ISymmetricDialect symmetricDialect) {
-        return new NodeCommunicationService(clusterService, nodeService, parameterService, configurationService, symmetricDialect);
+    protected INodeCommunicationService buildNodeCommunicationService() {
+        return new NodeCommunicationService(this);
     }
 
     abstract protected IStagingManager createStagingManager();
@@ -412,53 +417,60 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
 
     abstract protected IJobManager createJobManager();
 
+    @Override
     public String getSyncUrl() {
         return parameterService.getSyncUrl();
     }
 
+    @Override
     public Properties getProperties() {
         Properties p = new Properties();
         p.putAll(parameterService.getAllParameters());
         return p;
     }
 
+    @Override
     public String getEngineName() {
         return parameterService.getEngineName();
     }
 
+    @Override
     public void setup() {
-        if (!setup) {
-            setupDatabase(false);
-            parameterService.setDatabaseHasBeenInitialized(true);
-            String databaseVersion = this.getNodeService().findIdentity() != null ? this.getNodeService().findIdentity().getSymmetricVersion() : null;
-            String softwareVersion = Version.version();
-            log.info("SymmetricDS database version : " + databaseVersion);
-            log.info("SymmetricDS software version : " + softwareVersion);
-            if (databaseVersion != null && !softwareVersion.equals(databaseVersion)) {
-                log.info("SymmetricDS database version does not match the current software version, running software upgrade listeners.");
-                List<ISoftwareUpgradeListener> softwareUpgradeListeners = extensionService.getExtensionPointList(ISoftwareUpgradeListener.class);
-                for (ISoftwareUpgradeListener listener : softwareUpgradeListeners) {
-                    listener.upgrade(databaseVersion, softwareVersion);
-                }
-            }
-            parameterService.setDatabaseHasBeenSetup(true);
-            setup = true;
+        if (dbSetupDone) {
+            return;
         }
+        isStartupDbParametersDifferentFromLastStart = detectStartupDbParametersDifferentFromLastStart();
+        setupDatabase(isStartupDbParametersDifferentFromLastStart);
+        parameterService.setDatabaseHasBeenInitialized(true);
+        String databaseVersion = this.getNodeService().findIdentity() != null ? this.getNodeService().findIdentity().getSymmetricVersion() : null;
+        String softwareVersion = Version.version();
+        log.info("SymmetricDS database version : " + databaseVersion);
+        log.info("SymmetricDS software version : " + softwareVersion);
+        if (databaseVersion != null && !softwareVersion.equals(databaseVersion)) {
+            log.info("SymmetricDS database version does not match the current software version, running software upgrade listeners.");
+            List<ISoftwareUpgradeListener> softwareUpgradeListeners = extensionService.getExtensionPointList(ISoftwareUpgradeListener.class);
+            for (ISoftwareUpgradeListener listener : softwareUpgradeListeners) {
+                listener.upgrade(databaseVersion, softwareVersion);
+            }
+        }
+        parameterService.setDatabaseHasBeenSetup(true);
+        dbSetupDone = true;
     }
 
+    @Override
     public void setupDatabase(boolean force) {
         log.info("Initializing SymmetricDS database");
         boolean isAutoConfigDatabase = parameterService.is(ParameterConstants.AUTO_CONFIGURE_DATABASE);
         boolean isAutoConfigDatabaseFast = parameterService.is(ParameterConstants.AUTO_CONFIGURE_DATABASE_FAST);
         if (force || isAutoConfigDatabase) {
-            if (isAutoConfigDatabaseFast && !hasSoftwareVersionChanged()) {
+            if (!force && isAutoConfigDatabaseFast && !hasSoftwareVersionChanged()) {
                 log.info("Version matches for tables and objects");
             } else {
-                log.info("Checking tables and objects");
+                log.info("Checking tables and objects. force={}", force);
                 symmetricDialect.initTablesAndDatabaseObjects();
             }
         } else {
-            if (hasSoftwareVersionChanged()) {
+            if (hasSoftwareVersionChanged() && !Version.isDevelopment(Version.version())) {
                 throw new SymmetricException("Upgrade of SymmetricDS runtime tables to version " + Version.version() +
                         " is required.  Enable " + ParameterConstants.AUTO_CONFIGURE_DATABASE
                         + " parameter for automatic upgrade of tables or perform manual upgrade with symadmin.");
@@ -503,23 +515,26 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
             stagingManager.clean(0);
         }
         node = nodeService.findIdentity();
-        if (node == null && parameterService.isRegistrationServer()
-                && parameterService.is(ParameterConstants.AUTO_INSERT_REG_SVR_IF_NOT_FOUND, false)) {
-            log.info("Inserting rows for node, security, identity and group for registration server");
-            String nodeId = parameterService.getExternalId();
-            node = new Node(parameterService, symmetricDialect, platform.getName());
-            node.setNodeId(node.getExternalId());
-            nodeService.save(node);
-            nodeService.insertNodeIdentity(nodeId);
-            node = nodeService.findIdentity();
-            nodeService.insertNodeGroup(node.getNodeGroupId(), null);
-            NodeSecurity nodeSecurity = nodeService.findOrCreateNodeSecurity(nodeId);
-            nodeSecurity.setInitialLoadTime(new Date());
-            nodeSecurity.setInitialLoadEndTime(new Date());
-            nodeSecurity.setRegistrationTime(new Date());
-            nodeSecurity.setInitialLoadEnabled(false);
-            nodeSecurity.setRegistrationEnabled(false);
-            nodeService.updateNodeSecurity(nodeSecurity);
+        if (parameterService.isRegistrationServer()) {
+            if (node == null && parameterService.is(ParameterConstants.AUTO_INSERT_REG_SVR_IF_NOT_FOUND, false)) {
+                log.info("Inserting rows for node, security, identity and group for registration server");
+                String nodeId = parameterService.getExternalId();
+                node = new Node(parameterService, symmetricDialect, platform.getName());
+                node.setNodeId(node.getExternalId());
+                nodeService.save(node);
+                nodeService.insertNodeIdentity(nodeId);
+                node = nodeService.findIdentity();
+                nodeService.insertNodeGroup(node.getNodeGroupId(), null);
+                NodeSecurity nodeSecurity = nodeService.findOrCreateNodeSecurity(nodeId);
+                nodeSecurity.setInitialLoadTime(new Date());
+                nodeSecurity.setInitialLoadEndTime(new Date());
+                nodeSecurity.setRegistrationTime(new Date());
+                nodeSecurity.setInitialLoadEnabled(false);
+                nodeSecurity.setRegistrationEnabled(false);
+                nodeService.updateNodeSecurity(nodeSecurity);
+            } else if (node != null) {
+                disableRegistrationIfNecessary(node.getNodeId());
+            }
         }
     }
 
@@ -567,6 +582,8 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
         String sqlScripts = parameterService
                 .getString(ParameterConstants.AUTO_CONFIGURE_REG_SVR_SQL_SCRIPT);
         if (!StringUtils.isBlank(sqlScripts)) {
+            boolean containsCurrentGroup = false;
+            Map<String, URL> fileUrlMap = new LinkedHashMap<String, URL>();
             String[] sqlScriptList = sqlScripts.split(",");
             for (String sqlScript : sqlScriptList) {
                 sqlScript = sqlScript.trim();
@@ -587,27 +604,50 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
                         }
                     }
                     if (fileUrl != null) {
-                        log.info("Executing {} '{}' ({})", ParameterConstants.AUTO_CONFIGURE_REG_SVR_SQL_SCRIPT, sqlScript, fileUrl);
-                        new SqlScript(fileUrl, symmetricDialect.getPlatform().getSqlTemplate(),
-                                true, SqlScriptReader.QUERY_ENDS, getSymmetricDialect().getPlatform()
-                                        .getSqlScriptReplacementTokens()).execute();
-                        loaded = true;
+                        fileUrlMap.put(sqlScript, fileUrl);
+                        if (!containsCurrentGroup) {
+                            containsCurrentGroup = SymmetricUtils.importContainsCurrentGroup(this, fileUrl, false);
+                        }
                     } else {
                         log.warn("Could not find the {}: '{}' to execute.  We would have run it if we had found it",
                                 ParameterConstants.AUTO_CONFIGURE_REG_SVR_SQL_SCRIPT, sqlScript);
                     }
                 }
             }
+            if (!containsCurrentGroup) {
+                throw new SymmetricException("Invalid %s. The script doesn't contain the current node group (%s).",
+                        ParameterConstants.AUTO_CONFIGURE_REG_SVR_SQL_SCRIPT, parameterService.getNodeGroupId());
+            }
+            for (Entry<String, URL> fileUrlEntry : fileUrlMap.entrySet()) {
+                String sqlScript = fileUrlEntry.getKey();
+                URL fileUrl = fileUrlEntry.getValue();
+                log.info("Executing {} '{}' ({})", ParameterConstants.AUTO_CONFIGURE_REG_SVR_SQL_SCRIPT, sqlScript, fileUrl);
+                new SqlScript(fileUrl, symmetricDialect.getPlatform().getSqlTemplate(), true, SqlScriptReader.QUERY_ENDS,
+                        getSymmetricDialect().getPlatform().getSqlScriptReplacementTokens()).execute();
+                loaded = true;
+            }
         }
         return loaded;
     }
 
+    protected void disableRegistrationIfNecessary(String registrationServerNodeId) {
+        NodeSecurity nodeSecurity = nodeService.findNodeSecurity(registrationServerNodeId);
+        if (nodeSecurity != null && nodeSecurity.isRegistrationEnabled()) {
+            log.info("Node {} is a registration server and its registration_enabled flag in {} is set to 1. Setting it back to 0.",
+                    registrationServerNodeId, TableConstants.getTableName(getTablePrefix(), TableConstants.SYM_NODE_SECURITY));
+            nodeSecurity.setRegistrationEnabled(false);
+            nodeService.updateNodeSecurity(nodeSecurity);
+        }
+    }
+
+    @Override
     public synchronized boolean start() {
         return start(true);
     }
 
     private boolean isFirstStart = true;
 
+    @Override
     public synchronized boolean start(boolean startJobs) {
         isInitialized = false;
         lastException = null;
@@ -625,9 +665,10 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
                                 "Starting registered node [group={}, id={}, nodeId={}]",
                                 new Object[] { node.getNodeGroupId(), node.getNodeId(),
                                         node.getExternalId() });
-                        boolean force = parameterService.is(ParameterConstants.AUTO_SYNC_TRIGGERS_AT_STARTUP_FORCE);
-                        if (parameterService.is(ParameterConstants.AUTO_SYNC_TRIGGERS_AT_STARTUP, true) || force ||
-                                triggerRouterService.getActiveTriggerHistories().size() == 0) {
+                        boolean force = isStartupDbParametersDifferentFromLastStart
+                                || parameterService.is(ParameterConstants.AUTO_SYNC_TRIGGERS_AT_STARTUP_FORCE);
+                        if (force || parameterService.is(ParameterConstants.AUTO_SYNC_TRIGGERS_AT_STARTUP, true)
+                                || triggerRouterService.getActiveTriggerHistories().size() == 0) {
                             triggerRouterService.syncTriggers(force);
                         } else {
                             log.info(ParameterConstants.AUTO_SYNC_TRIGGERS_AT_STARTUP
@@ -763,6 +804,7 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
         return node;
     }
 
+    @Override
     public String getEngineDescription(String msg) {
         if (lastRestartTime == null) {
             return "";
@@ -776,56 +818,122 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
                 symmetricDialect.getDriverVersion(), formattedUptime);
     }
 
+    @Override
     public synchronized void uninstall() {
+        uninstall(null);
+    }
+
+    @Override
+    public synchronized void uninstall(IProcessInfoListener listener) {
         log.info("Attempting an uninstall of all SymmetricDS database objects from the database");
+        final int dropTriggersWeight = 20;
+        final int dropTablesWeight = 80;
+        final int totalStepCount = dropTriggersWeight + dropTablesWeight + 13;
+        ProcessInfo processInfo = statisticManager.newProcessInfo(new ProcessInfoKey(getNodeId(), null, ProcessType.UNINSTALL));
+        if (listener != null) {
+            processInfo.setListener(listener);
+        }
+        processInfo.setTotalDataCount(totalStepCount);
         stop();
+        processInfo.incrementCurrentDataCount();
         log.info("Just cleaned {} files in the staging area during the uninstall.", getStagingManager().clean(0));
         try {
             String prefix = parameterService.getTablePrefix();
             if (platform.readTableFromDatabase(null, null, TableConstants.getTableName(prefix, TableConstants.SYM_GROUPLET)) != null) {
                 groupletService.deleteAllGrouplets();
             }
+            processInfo.incrementCurrentDataCount();
             if (platform.readTableFromDatabase(null, null, TableConstants.getTableName(prefix, TableConstants.SYM_TRIGGER_ROUTER)) != null) {
                 triggerRouterService.deleteAllTriggerRouters();
             }
+            processInfo.incrementCurrentDataCount();
             if (platform.readTableFromDatabase(null, null, TableConstants.getTableName(prefix, TableConstants.SYM_FILE_TRIGGER_ROUTER)) != null) {
                 fileSyncService.deleteAllFileTriggerRouters();
             }
+            processInfo.incrementCurrentDataCount();
             if (platform.readTableFromDatabase(null, null, TableConstants.getTableName(prefix, TableConstants.SYM_ROUTER)) != null) {
                 triggerRouterService.deleteAllRouters();
             }
+            processInfo.incrementCurrentDataCount();
             if (platform.readTableFromDatabase(null, null, TableConstants.getTableName(prefix, TableConstants.SYM_CONFLICT)) != null) {
                 dataLoaderService.deleteAllConflicts();
             }
+            processInfo.incrementCurrentDataCount();
             if (platform.readTableFromDatabase(null, null, TableConstants.getTableName(prefix, TableConstants.SYM_TRANSFORM_TABLE)) != null) {
                 transformService.deleteAllTransformTables();
             }
+            processInfo.incrementCurrentDataCount();
             if (platform.readTableFromDatabase(null, null, TableConstants.getTableName(prefix, TableConstants.SYM_ROUTER)) != null) {
                 triggerRouterService.deleteAllRouters();
             }
+            processInfo.incrementCurrentDataCount();
             if (platform.readTableFromDatabase(null, null, TableConstants.getTableName(prefix, TableConstants.SYM_CONFLICT)) != null) {
                 dataLoaderService.deleteAllConflicts();
             }
+            processInfo.incrementCurrentDataCount();
             if (platform.readTableFromDatabase(null, null, TableConstants.getTableName(prefix, TableConstants.SYM_NODE_GROUP_LINK)) != null) {
                 configurationService.deleteAllNodeGroupLinks();
             }
+            processInfo.incrementCurrentDataCount();
             if (platform.readTableFromDatabase(null, null, TableConstants.getTableName(prefix, TableConstants.SYM_LOCK)) != null) {
+                disableParameter(ParameterConstants.TRIGGER_CAPTURE_DDL_CHANGES);
+                disableParameter(ParameterConstants.POSTGRES_TRIGGER_CAPTURE_TRUNCATE);
                 // this should remove all triggers because we have removed all the trigger configuration
                 triggerRouterService.syncTriggers(true);
             }
         } catch (SqlException ex) {
             log.warn("Error while trying to remove triggers on tables", ex);
         }
+        processInfo.setCurrentDataCount(dropTriggersWeight + 10);
         // remove any additional triggers that may remain because they were not in trigger history
         symmetricDialect.cleanupTriggers();
+        processInfo.incrementCurrentDataCount();
         log.info("Removing SymmetricDS database objects");
-        symmetricDialect.dropTablesAndDatabaseObjects();
+        Database symSchema = ((AbstractSymmetricDialect) symmetricDialect).readSymmetricSchemaFromDatabase();
+        String dropTablesSql = platform.getDdlBuilder().dropTables(symSchema);
+        DatabaseInfo databaseInfo = platform.getDatabaseInfo();
+        int dropStatementsToRunCount = SqlScript.calculateTotalStatements(dropTablesSql,
+                databaseInfo.getSqlCommandDelimiter(), databaseInfo.isTriggersContainJava());
+        SqlScript dropTablesScript = new SqlScript(dropTablesSql, getSqlTemplate(), false, null);
+        dropTablesScript.setListener(generateDropTablesListener(processInfo, dropTablesWeight, dropStatementsToRunCount, dropTriggersWeight + 11));
+        dropTablesScript.execute(platform.getDatabaseInfo().isRequiresAutoCommitForDdl());
+        processInfo.setCurrentDataCount(dropTriggersWeight + dropTablesWeight + 11);
+        symmetricDialect.dropRequiredDatabaseObjects();
+        processInfo.incrementCurrentDataCount();
         // force cache to be cleared
         nodeService.deleteIdentity();
         parameterService.setDatabaseHasBeenInitialized(false);
+        processInfo.setCurrentDataCount(totalStepCount);
         log.info("Finished uninstalling SymmetricDS database objects from the database");
     }
 
+    private void disableParameter(String parameter) {
+        if (parameterService.is(parameter)) {
+            parameterService.saveParameter(parameterService.getExternalId(), parameterService.getNodeGroupId(),
+                    parameter, false, Constants.SYSTEM_USER);
+        }
+    }
+
+    private static ISqlResultsListener generateDropTablesListener(ProcessInfo processInfo, int dropTablesWeight,
+            int dropStatementsToRunCount, int otherDataCount) {
+        return new ISqlResultsListener() {
+            @Override
+            public void sqlBefore(String sql, int lineNumber) {
+            }
+
+            @Override
+            public void sqlApplied(String sql, int rowsUpdated, int rowsRetrieved, int lineNumber) {
+                processInfo.setCurrentDataCount(
+                        Math.round((dropTablesWeight * (lineNumber + 1)) / (float) dropStatementsToRunCount) + otherDataCount);
+            }
+
+            @Override
+            public void sqlErrored(String sql, SqlException ex, int lineNumber, boolean dropStatement, boolean sequenceCreate) {
+            }
+        };
+    }
+
+    @Override
     public synchronized void stop() {
         log.info("Stopping SymmetricDS externalId={} version={} database={}",
                 new Object[] { parameterService == null ? "?" : parameterService.getExternalId(), Version.version(),
@@ -878,6 +986,7 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
         }
     }
 
+    @Override
     public synchronized void destroy() {
         removeMeFromMap(registeredEnginesByName);
         removeMeFromMap(registeredEnginesByUrl);
@@ -896,56 +1005,67 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
         }
     }
 
+    @Override
     public String reloadNode(String nodeId, String createBy) {
         return dataService.reloadNode(nodeId, false, createBy);
     }
 
+    @Override
     public String sendSQL(String nodeId, String catalogName, String schemaName, String tableName,
             String sql) {
         return dataService.sendSQL(nodeId, catalogName, schemaName, tableName, sql);
     }
 
+    @Override
     public RemoteNodeStatuses push() {
         MDC.put("engineName", getEngineName());
         return pushService.pushData(true);
     }
 
+    @Override
     public boolean syncTriggers() {
         MDC.put("engineName", getEngineName());
         return triggerRouterService.syncTriggers();
     }
 
+    @Override
     public boolean forceTriggerRebuild() {
         MDC.put("engineName", getEngineName());
         return triggerRouterService.syncTriggers(true);
     }
 
+    @Override
     public NodeStatus getNodeStatus() {
         return nodeService.getNodeStatus();
     }
 
+    @Override
     public void removeAndCleanupNode(String nodeId) {
         log.info("Removing node {}", nodeId);
         nodeService.deleteNode(nodeId, false);
         log.info("Done removing node ID {}", nodeId);
     }
 
+    @Override
     public RemoteNodeStatuses pull() {
         MDC.put("engineName", getEngineName());
         return pullService.pullData(true);
     }
 
+    @Override
     public void route() {
         MDC.put("engineName", getEngineName());
         routerService.routeData(true);
     }
 
+    @Override
     public void purge() {
         MDC.put("engineName", getEngineName());
         purgeService.purgeOutgoing(true);
         purgeService.purgeIncoming(true);
     }
 
+    @Override
     public boolean isConfigured() {
         boolean configurationValid = false;
         String errorMessage = null;
@@ -1017,16 +1137,19 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
         return configurationValid;
     }
 
+    @Override
     public void heartbeat(boolean force) {
         MDC.put("engineName", getEngineName());
         dataService.heartbeat(force);
     }
 
+    @Override
     public void openRegistration(String nodeGroupId, String externalId) {
         MDC.put("engineName", getEngineName());
         registrationService.openRegistration(nodeGroupId, externalId);
     }
 
+    @Override
     public void clearCaches() {
         getExtensionService().refresh();
         getTriggerRouterService().clearCache();
@@ -1042,151 +1165,188 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
         getFileSyncService().clearCache();
     }
 
+    @Override
     public void reOpenRegistration(String nodeId) {
         MDC.put("engineName", getEngineName());
         registrationService.reOpenRegistration(nodeId);
     }
 
+    @Override
     public boolean isRegistered() {
         return nodeService.findIdentity() != null;
     }
 
+    @Override
     public boolean isStarted() {
         return started;
     }
 
+    @Override
     public boolean isStarting() {
         return starting;
     }
 
+    @Override
     public boolean isInitialized() {
         return isInitialized;
     }
 
+    @Override
     public IConfigurationService getConfigurationService() {
         return configurationService;
     }
 
+    @Override
     public IParameterService getParameterService() {
         return parameterService;
     }
 
+    @Override
     public INodeService getNodeService() {
         return nodeService;
     }
 
+    @Override
     public IRegistrationService getRegistrationService() {
         return registrationService;
     }
 
+    @Override
     public IClusterService getClusterService() {
         return clusterService;
     }
 
+    @Override
     public IPurgeService getPurgeService() {
         return purgeService;
     }
 
+    @Override
     public IDataService getDataService() {
         return dataService;
     }
 
+    @Override
     public IJobManager getJobManager() {
         return this.jobManager;
     }
 
+    @Override
     public IOutgoingBatchService getOutgoingBatchService() {
         return outgoingBatchService;
     }
 
+    @Override
     public IAcknowledgeService getAcknowledgeService() {
         return this.acknowledgeService;
     }
 
+    @Override
     public IBandwidthService getBandwidthService() {
         return bandwidthService;
     }
 
+    @Override
     public IDataExtractorService getDataExtractorService() {
         return this.dataExtractorService;
     }
 
+    @Override
     public IDataExtractorService getFileSyncExtractorService() {
         return this.fileSyncExtractorService;
     }
 
+    @Override
     public IDataLoaderService getDataLoaderService() {
         return this.dataLoaderService;
     }
 
+    @Override
     public IIncomingBatchService getIncomingBatchService() {
         return this.incomingBatchService;
     }
 
+    @Override
     public IPullService getPullService() {
         return this.pullService;
     }
 
+    @Override
     public IPushService getPushService() {
         return this.pushService;
     }
 
+    @Override
     public IOfflinePullService getOfflinePullService() {
         return this.offlinePullService;
     }
 
+    @Override
     public IOfflinePushService getOfflinePushService() {
         return this.offlinePushService;
     }
 
+    @Override
     public IRouterService getRouterService() {
         return this.routerService;
     }
 
+    @Override
     public ISecurityService getSecurityService() {
         return securityService;
     }
 
+    @Override
     public IStatisticService getStatisticService() {
         return statisticService;
     }
 
+    @Override
     public IStatisticManager getStatisticManager() {
         return statisticManager;
     }
 
+    @Override
     public ITriggerRouterService getTriggerRouterService() {
         return triggerRouterService;
     }
 
+    @Override
     public String getDeploymentType() {
         return deploymentType;
     }
 
+    @Override
     public String getDeploymentSubType() {
         return deploymentSubType;
     }
 
+    @Override
     public ITransformService getTransformService() {
         return this.transformService;
     }
 
+    @Override
     public ILoadFilterService getLoadFilterService() {
         return this.loadFilterService;
     }
 
+    @Override
     public IInitialLoadService getInitialLoadService() {
         return initialLoadService;
     }
 
+    @Override
     public IConcurrentConnectionManager getConcurrentConnectionManager() {
         return concurrentConnectionManager;
     }
 
+    @Override
     public String getTablePrefix() {
         return parameterService.getTablePrefix();
     }
 
+    @Override
     public ITransportManager getTransportManager() {
         return transportManager;
     }
@@ -1195,34 +1355,42 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
         return offlineTransportManager;
     }
 
+    @Override
     public IExtensionService getExtensionService() {
         return extensionService;
     }
 
+    @Override
     public IContextService getContextService() {
         return contextService;
     }
 
+    @Override
     public IStagingManager getStagingManager() {
         return stagingManager;
     }
 
+    @Override
     public ISequenceService getSequenceService() {
         return sequenceService;
     }
 
+    @Override
     public INodeCommunicationService getNodeCommunicationService() {
         return nodeCommunicationService;
     }
 
+    @Override
     public IGroupletService getGroupletService() {
         return groupletService;
     }
 
+    @Override
     public Throwable getLastException() {
         return lastException;
     }
 
+    @Override
     public String getLastExceptionMessage() {
         return lastException == null ? null : lastException.getMessage();
     }
@@ -1267,31 +1435,38 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
         }
     }
 
+    @Override
     public Date getLastRestartTime() {
         return lastRestartTime;
     }
 
+    @Override
     public ISqlTemplate getSqlTemplate() {
         return getSymmetricDialect().getPlatform().getSqlTemplate();
     }
 
+    @Override
     public Logger getLog() {
         return log;
     }
 
+    @Override
     @SuppressWarnings("unchecked")
     public <T> T getDataSource() {
         return (T) getSymmetricDialect().getPlatform().getDataSource();
     }
 
+    @Override
     public IDatabasePlatform getDatabasePlatform() {
         return getSymmetricDialect().getPlatform();
     }
 
+    @Override
     public IFileSyncService getFileSyncService() {
         return fileSyncService;
     }
 
+    @Override
     public IUpdateService getUpdateService() {
         return updateService;
     }
@@ -1319,5 +1494,27 @@ abstract public class AbstractSymmetricEngine implements ISymmetricEngine {
     @Override
     public ICacheManager getCacheManager() {
         return cacheManager;
+    }
+
+    protected boolean detectStartupDbParametersDifferentFromLastStart() {
+        boolean dbParamsDifferent = false;
+        try {
+            int hashDbParams = parameterService.hashParameterValues(ParameterConstants.STARTUP_DB_OBJECTS_SETUP_PARAMS);
+            String currentHashDbParamsAsString = "0x" + Integer.toHexString(hashDbParams);
+            String priorHashDbParams = contextService.getString(ContextConstants.STARTUP_DB_OBJECTS_SETUP_HASH);
+            if (currentHashDbParamsAsString.equals(priorHashDbParams)) {
+                log.debug("No change in SymmetricDS startup database parameters. Hash {} == {}", currentHashDbParamsAsString,
+                        priorHashDbParams);
+            } else {
+                dbParamsDifferent = true;
+                contextService.save(ContextConstants.STARTUP_DB_OBJECTS_SETUP_HASH, currentHashDbParamsAsString);
+                log.info("Detected change in SymmetricDS startup database parameters. Hash {} != {}", currentHashDbParamsAsString,
+                        priorHashDbParams);
+            }
+        } catch (Exception e) {
+            dbParamsDifferent = true;
+            log.warn("Unable to compare SymmetricDS startup database parameters! Assuming there are differences.", e);
+        }
+        return dbParamsDifferent;
     }
 }

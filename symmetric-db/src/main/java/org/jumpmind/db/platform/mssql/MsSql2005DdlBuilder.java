@@ -24,12 +24,17 @@ import java.sql.Types;
 
 import org.apache.commons.lang3.StringUtils;
 import org.jumpmind.db.model.Column;
+import org.jumpmind.db.model.IIndex;
+import org.jumpmind.db.model.IndexColumn;
 import org.jumpmind.db.model.PlatformColumn;
 import org.jumpmind.db.model.Table;
 import org.jumpmind.db.model.TypeMap;
 import org.jumpmind.db.platform.DatabaseNamesConstants;
 
 public class MsSql2005DdlBuilder extends MsSql2000DdlBuilder {
+    public static final int NVARCHARMAX_LIMIT = 4000;
+    public static final int VARCHARMAX_LIMIT = 8000;
+
     public MsSql2005DdlBuilder() {
         super();
         this.databaseName = DatabaseNamesConstants.MSSQL2005;
@@ -45,6 +50,7 @@ public class MsSql2005DdlBuilder extends MsSql2000DdlBuilder {
         databaseInfo.addNativeTypeMapping(Types.LONGVARCHAR, "VARCHAR(MAX)", Types.LONGVARCHAR);
     }
 
+    @Override
     protected void dropDefaultConstraint(Table table, String columnName, StringBuilder ddl) {
         String catalog = table.getCatalog();
         String schema = table.getSchema();
@@ -92,6 +98,7 @@ public class MsSql2005DdlBuilder extends MsSql2000DdlBuilder {
         printEndOfStatement(ddl);
     }
 
+    @Override
     protected void dropColumnChangeDefaults(Table sourceTable, Column sourceColumn, StringBuilder ddl) {
         // we're dropping the old default
         String tableName = getTableName(sourceTable.getName());
@@ -191,9 +198,9 @@ public class MsSql2005DdlBuilder extends MsSql2000DdlBuilder {
             sqlType = "HIERARCHYID";
         } else if (column.getMappedTypeCode() == Types.VARBINARY && column.getSizeAsInt() > 8000) {
             sqlType = "VARBINARY(MAX)";
-        } else if (column.getMappedTypeCode() == Types.VARCHAR && column.getSizeAsInt() > 8000) {
+        } else if (column.getMappedTypeCode() == Types.VARCHAR && column.getSizeAsInt() > VARCHARMAX_LIMIT) {
             sqlType = "VARCHAR(MAX)";
-        } else if (column.getMappedTypeCode() == Types.NVARCHAR && column.getSizeAsInt() > 8000) {
+        } else if (column.getMappedTypeCode() == Types.NVARCHAR && column.getSizeAsInt() > NVARCHARMAX_LIMIT) {
             sqlType = "NVARCHAR(MAX)";
         } else if (column.getMappedTypeCode() == Types.DECIMAL && column.getSizeAsInt() > 38) {
             sqlType = String.format("DECIMAL(38,%d)", column.getScale());
@@ -207,8 +214,8 @@ public class MsSql2005DdlBuilder extends MsSql2000DdlBuilder {
         if (useNvarChar && column.getMappedTypeCode() == Types.VARCHAR) {
             int intColumnSize = 2 * column.getSizeAsInt(); // As every character in MSSQL takes at least 2 bytes in N-types, we have to double the size.
             String strColumnSize = String.valueOf(intColumnSize);
-            if (intColumnSize > 4000) {
-                strColumnSize = "max";
+            if (intColumnSize > NVARCHARMAX_LIMIT) {
+                strColumnSize = "MAX";
             }
             sqlType = String.format("NVARCHAR(%s)", strColumnSize);
         }
@@ -223,6 +230,23 @@ public class MsSql2005DdlBuilder extends MsSql2000DdlBuilder {
                 !(databaseInfo.isNullAsDefaultValueRequired() && databaseInfo.hasNullDefault(column.getMappedTypeCode()))) {
             ddl.append(" ");
             writeColumnNullableStmt(ddl);
+        }
+    }
+
+    @Override
+    protected void writeExternalIndexCreate(Table table, IIndex index, StringBuilder ddl) {
+        super.writeExternalIndexCreate(table, index, ddl);
+        if (index.getIncludedColumns() != null && index.getIncludedColumns().length > 0) {
+            ddl.append(" INCLUDE (");
+            IndexColumn[] includedColumns = index.getIncludedColumns();
+            for (int i = 0; i < includedColumns.length; i++) {
+                IndexColumn includedColumn = includedColumns[i];
+                if (i > 0) {
+                    ddl.append(", ");
+                }
+                ddl.append(includedColumn.getName());
+            }
+            ddl.append(")");
         }
     }
 }

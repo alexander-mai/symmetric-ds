@@ -87,6 +87,8 @@ public interface IDataService {
     public TableReloadStatus updateTableReloadStatusDataLoaded(ISqlTransaction transcation, long loadId,
             String sourceNodeId, long batchId, int batchCount, boolean isBulkLoaded);
 
+    public void updateTableReloadStatusFailed(long loadId, String sourceNodeId, long batchId);
+
     public void updateTableReloadStatusFailed(ISqlTransaction transaction, long loadId, String sourceNodeId, long batchId);
 
     public int updateTableReloadRequestsCancelled(long loadId, String sourceNodeId);
@@ -157,6 +159,8 @@ public interface IDataService {
     public long insertData(Data data);
 
     public long insertData(ISqlTransaction transaction, final Data data);
+
+    public void insertData(ISqlTransaction transaction, List<Data> datas);
 
     public void insertDataEvents(ISqlTransaction transaction, List<DataEvent> events);
 

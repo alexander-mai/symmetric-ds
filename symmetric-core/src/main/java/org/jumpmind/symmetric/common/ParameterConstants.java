@@ -155,6 +155,7 @@ final public class ParameterConstants {
     public final static String INITIAL_LOAD_CONCAT_CSV_IN_SQL_ENABLED = "initial.load.concat.csv.in.sql.enabled";
     public final static String INITIAL_LOAD_USE_COLUMN_TEMPLATES_ENABLED = "initial.load.use.column.templates.enabled";
     public final static String INITIAL_LOAD_EXTRACT_THREAD_COUNT_PER_SERVER = "initial.load.extract.thread.per.server.count";
+    public final static String INITIAL_LOAD_EXTRACT_MAX_PROCESS_TIME_MS = "initial.load.extract.max.process.time.ms";
     public final static String INITIAL_LOAD_EXTRACT_TIMEOUT_MS = "initial.load.extract.timeout.ms";
     public final static String INITIAL_LOAD_EXTRACT_USE_TWO_PASS_LOB = "initial.load.extract.use.two.pass.lob";
     public final static String INITIAL_LOAD_EXTRACT_JOB_START = "start.initial.load.extract.job";
@@ -164,6 +165,7 @@ final public class ParameterConstants {
     public final static String INITIAL_LOAD_USE_ESTIMATED_COUNTS = "initial.load.use.estimated.counts";
     public final static String INITIAL_LOAD_PURGE_STAGE_IMMEDIATE_THRESHOLD_ROWS = "initial.load.purge.stage.immediate.threshold.rows";
     public final static String INITIAL_LOAD_DEFER_CREATE_CONSTRAINTS = "initial.load.defer.create.constraints";
+    public final static String INITIAL_LOAD_DEFER_TABLE_LOGGING = "initial.load.defer.table.logging";
     public final static String INITIAL_LOAD_RECURSION_SELF_FK = "initial.load.recursion.self.fk";
     public final static String EXTRACT_CHECK_ROW_SIZE = "extract.check.row.size";
     public final static String EXTRACT_ROW_MAX_LENGTH = "extract.row.max.length";
@@ -173,6 +175,7 @@ final public class ParameterConstants {
     public final static String CREATE_TABLE_WITHOUT_INDEXES = "create.table.without.indexes";
     public final static String CREATE_TABLE_WITHOUT_PK_IF_SOURCE_WITHOUT_PK = "create.table.without.pk.if.source.without.pk";
     public final static String CREATE_TABLE_NOT_NULL_COLUMNS = "create.table.not.null.columns.supported";
+    public final static String CREATE_TABLE_INCLUDE_APPLICATION_TRIGGERS = "create.table.include.application.triggers";
     public final static String CREATE_INDEX_CONVERT_UNIQUE_TO_NONUNIQUE_WHEN_COLUMNS_NOT_REQUIRED = "create.index.convert.unique.to.nonunique.when.columns.not.required";
     public final static String STREAM_TO_FILE_ENABLED = "stream.to.file.enabled";
     public final static String STREAM_TO_FILE_THRESHOLD = "stream.to.file.threshold.bytes";
@@ -215,6 +218,7 @@ final public class ParameterConstants {
     @Deprecated
     public final static String INCOMING_BATCH_DELETE_ON_LOAD = "incoming.batch.delete.on.load";
     public final static String INCOMING_BATCH_RECORD_OK_ENABLED = "incoming.batches.record.ok.enabled";
+    public final static String INCOMING_BATCHES_USE_SOURCE_STAGING = "incoming.batches.use.source.staging";
     public final static String DATA_LOADER_ENABLED = "dataloader.enable";
     public final static String DATA_LOADER_APPLY_CHANGES_ONLY = "dataloader.apply.changes.only";
     public final static String DATA_LOADER_IGNORE_MISSING_TABLES = "dataloader.ignore.missing.tables";
@@ -232,6 +236,7 @@ final public class ParameterConstants {
     public final static String DATA_LOADER_TREAT_BIT_AS_INTEGER = "db.treat.bit.as.integer.enabled";
     public final static String DATA_LOADER_USE_PRIMARY_KEYS_FROM_SOURCE = "dataloader.use.primary.keys.from.source";
     public final static String DATA_LOADER_IGNORE_SQL_EVENT_ERRORS = "dataloader.ignore.sql.event.errors";
+    public final static String DATA_LOADER_SQL_EVENT_STRIP_COMMENTS = "dataloader.sql.event.strip.comments";
     public final static String DATA_LOADER_LOG_SQL_PARAMS_ON_ERROR = "dataloader.log.sql.params.on.error";
     public final static String DATA_RELOAD_IS_BATCH_INSERT_TRANSACTIONAL = "datareload.batch.insert.transactional";
     public final static String DATA_EXTRACTOR_ENABLED = "dataextractor.enable";
@@ -268,12 +273,14 @@ final public class ParameterConstants {
     public final static String TRANSPORT_HTTP_USE_HEADER_SECURITY_TOKEN = "http.use.header.security.token";
     public final static String TRANSPORT_TYPE = "transport.type";
     public final static String TRANSPORT_MAX_BYTES_TO_SYNC = "transport.max.bytes.to.sync";
+    public final static String TRANSPORT_MAX_FORM_KEYS = "transport.max.form.keys";
     public final static String TRANSPORT_MAX_ERROR_MILLIS = "transport.max.error.millis";
     public final static String CACHE_TIMEOUT_GROUPLETS_IN_MS = "cache.grouplets.time.ms";
     public final static String CACHE_TIMEOUT_NODE_SECURITY_IN_MS = "cache.node.security.time.ms";
     public final static String CACHE_TIMEOUT_NODE_IN_MS = "cache.node.time.ms";
     public final static String CACHE_TIMEOUT_TRIGGER_ROUTER_IN_MS = "cache.trigger.router.time.ms";
     public final static String CACHE_TIMEOUT_CHANNEL_IN_MS = "cache.channel.time.ms";
+    public final static String CACHE_TIMEOUT_READY_QUEUE_IN_MS = "cache.ready.queue.time.ms";
     public final static String CACHE_TIMEOUT_NODE_GROUP_LINK_IN_MS = "cache.node.group.link.time.ms";
     public final static String CACHE_TIMEOUT_TRANSFORM_IN_MS = "cache.transform.time.ms";
     public final static String CACHE_TIMEOUT_LOAD_FILTER_IN_MS = "cache.load.filter.time.ms";
@@ -368,9 +375,11 @@ final public class ParameterConstants {
     public final static String MSSQL_TRIGGER_EXECUTE_AS = "mssql.trigger.execute.as";
     public final static String MSSQL_TRIGGER_ORDER_FIRST = "mssql.trigger.order.first";
     public final static String MSSQL_USE_SNAPSHOT_ISOLATION = "mssql.use.snapshot.isolation";
+    public final static String MSSQL_BULK_EXTRACT_USE_BCP = "mssql.bulk.extract.use.bcp";
     public final static String DBDIALECT_SYBASE_ASE_CONVERT_UNITYPES_FOR_SYNC = "sybase.ase.convert.unitypes.for.sync";
     public final static String SYBASE_ROW_LEVEL_LOCKS_ONLY = "sybase.allow.only.row.level.locks.on.runtime.tables";
     public final static String SYBASE_CHANGE_IDENTITY_GAP = "sybase.change.identity.gap.on.runtime.tables";
+    public final static String ASE_BULK_EXTRACT_USE_BCP = "ase.bulk.extract.use.bcp";
     public final static String SQLITE_TRIGGER_FUNCTION_TO_USE = "sqlite.trigger.function.to.use";
     public final static String AS400_CAST_CLOB_TO = "as400.cast.clob.to";
     public final static String EXTENSIONS_XML = "extensions.xml";
@@ -435,8 +444,11 @@ final public class ParameterConstants {
     public final static String SNAPSHOT_MAX_BATCHES = "snapshot.max.batches";
     public final static String SNAPSHOT_MAX_NODE_CHANNELS = "snapshot.max.node.channels";
     public final static String SNAPSHOT_OPERATION_TIMEOUT_MS = "snapshot.operation.timeout.ms";
+    public final static String POSTGRES_TRIGGER_CAPTURE_TRUNCATE = "postgres.trigger.capture.truncate.event";
     public final static String POSTGRES_SECURITY_DEFINER = "postgres.security.definer";
     public final static String POSTGRES_CONVERT_INFINITY_DATE_TO_NULL = "postgres.convert.infinity.date.to.null";
+    public final static String[] STARTUP_DB_OBJECTS_SETUP_PARAMS = new String[] { TRIGGER_CAPTURE_DDL_CHANGES,
+            POSTGRES_TRIGGER_CAPTURE_TRUNCATE, DB_USER, "db.url", "target.db.url" };
     public final static String[] ALL_JDBC_PARAMS = new String[] { DB_FETCH_SIZE, DB_QUERY_TIMEOUT_SECS, JDBC_EXECUTE_BATCH_SIZE, JDBC_ISOLATION_LEVEL,
             JDBC_READ_STRINGS_AS_BYTES, TREAT_BINARY_AS_LOB_ENABLED, LOG_SLOW_SQL_THRESHOLD_MILLIS, LOG_SQL_PARAMETERS_INLINE };
     public final static String GOOGLE_BIG_QUERY_MAX_ROWS_PER_RPC = "google.bigquery.max.rows.per.rpc";
@@ -466,6 +478,9 @@ final public class ParameterConstants {
     public final static String COMPARE_LOCK_TIMEOUT_MS = "compare.lock.timeout.ms";
     public final static String CAPTURE_TYPE_TIME_BASED = "time.based.capture";
     public final static String FILESYNCTRACKER_MAX_ROWS_BEFORE_COMMIT = "filesynctracker.max.rows.before.commit";
+    public final static String SYNC_USE_READY_QUEUES = "sync.use.ready.queues";
+    public final static String KEEP_BULK_STAGING_FILES = "keep.bulk.staging.files";
+    public final static String MSSQL_BULK_LOAD_BCP_CODE_PAGE = "mssql.bulk.load.bcp.code.page";
 
     public static Map<String, ParameterMetaData> getParameterMetaData() {
         return parameterMetaData;
@@ -479,4 +494,5 @@ final public class ParameterConstants {
         }
         return tags;
     }
+
 }

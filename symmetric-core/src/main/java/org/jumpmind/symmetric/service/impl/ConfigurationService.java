@@ -21,6 +21,7 @@
 package org.jumpmind.symmetric.service.impl;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -34,6 +35,7 @@ import org.jumpmind.db.model.Table;
 import org.jumpmind.db.sql.ISqlRowMapper;
 import org.jumpmind.db.sql.ISqlTransaction;
 import org.jumpmind.db.sql.Row;
+import org.jumpmind.symmetric.AbstractSymmetricEngine;
 import org.jumpmind.symmetric.ISymmetricEngine;
 import org.jumpmind.symmetric.cache.ICacheManager;
 import org.jumpmind.symmetric.common.Constants;
@@ -50,6 +52,7 @@ import org.jumpmind.symmetric.model.NodeGroupLink;
 import org.jumpmind.symmetric.model.NodeGroupLinkAction;
 import org.jumpmind.symmetric.service.IConfigurationService;
 import org.jumpmind.symmetric.service.INodeService;
+import org.jumpmind.symmetric.service.IParameterService;
 
 /**
  * @see IConfigurationService
@@ -71,23 +74,21 @@ public class ConfigurationService extends AbstractService implements IConfigurat
 
     protected final void createDefaultChannels() {
         Map<String, Channel> updatedDefaultChannels = new LinkedHashMap<String, Channel>();
-        updatedDefaultChannels.put(Constants.CHANNEL_CONFIG,
-                new Channel(Constants.CHANNEL_CONFIG, 0, 2000, 10, true, 0, true));
+        updatedDefaultChannels.put(Constants.CHANNEL_CONFIG, new Channel(Constants.CHANNEL_CONFIG, 0, 2000, 10, true, 0, true, Constants.QUEUE_SYSTEM));
+        updatedDefaultChannels.put(Constants.CHANNEL_SYSTEM, new Channel(Constants.CHANNEL_SYSTEM, 0, 2000, 10, true, 0, true, Constants.QUEUE_SYSTEM));
+        Channel reloadChannel;
         if (parameterService.is(ParameterConstants.INITIAL_LOAD_USE_EXTRACT_JOB)) {
-            updatedDefaultChannels.put(Constants.CHANNEL_RELOAD,
-                    new Channel(Constants.CHANNEL_RELOAD, 1, 10000, 10, true, 0, false, true, false));
+            reloadChannel = new Channel(Constants.CHANNEL_RELOAD, 1, 500000, 10, true, 0, false, true, false);
+            reloadChannel.setQueue(Constants.QUEUE_RELOAD);
         } else {
-            updatedDefaultChannels.put(Constants.CHANNEL_RELOAD,
-                    new Channel(Constants.CHANNEL_RELOAD, 1, 1, 1, true, 0, false, true, false));
+            reloadChannel = new Channel(Constants.CHANNEL_RELOAD, 1, 1, 1, true, 0, false, true, false);
         }
-        updatedDefaultChannels.put(Constants.CHANNEL_MONITOR,
-                new Channel(Constants.CHANNEL_MONITOR, 2, 100, 10, true, 0, true));
-        updatedDefaultChannels.put(Constants.CHANNEL_HEARTBEAT,
-                new Channel(Constants.CHANNEL_HEARTBEAT, 2, 100, 10, true, 0, false));
-        updatedDefaultChannels.put(Constants.CHANNEL_DEFAULT,
-                new Channel(Constants.CHANNEL_DEFAULT, 500000, 1000, 10, true, 0, false));
-        updatedDefaultChannels.put(Constants.CHANNEL_DYNAMIC,
-                new Channel(Constants.CHANNEL_DYNAMIC, 99999, 1000, 10, true, 0, false));
+        reloadChannel.setDataLoaderType("bulk");
+        updatedDefaultChannels.put(Constants.CHANNEL_RELOAD, reloadChannel);
+        updatedDefaultChannels.put(Constants.CHANNEL_MONITOR, new Channel(Constants.CHANNEL_MONITOR, 2, 100, 10, true, 0, true, Constants.QUEUE_SYSTEM));
+        updatedDefaultChannels.put(Constants.CHANNEL_HEARTBEAT, new Channel(Constants.CHANNEL_HEARTBEAT, 2, 100, 10, true, 0, false, Constants.QUEUE_SYSTEM));
+        updatedDefaultChannels.put(Constants.CHANNEL_DEFAULT, new Channel(Constants.CHANNEL_DEFAULT, 500000, 1000, 10, true, 0, false));
+        updatedDefaultChannels.put(Constants.CHANNEL_DYNAMIC, new Channel(Constants.CHANNEL_DYNAMIC, 99999, 1000, 10, true, 0, false));
         if (parameterService.is(ParameterConstants.FILE_SYNC_ENABLE)) {
             updatedDefaultChannels.put(Constants.CHANNEL_FILESYNC,
                     new Channel(Constants.CHANNEL_FILESYNC, 3, 100, 10, true, 0, false, "nontransactional", false, true));
@@ -99,8 +100,14 @@ public class ConfigurationService extends AbstractService implements IConfigurat
 
     @Override
     public boolean isBulkLoaderEnabled() {
-        List<Channel> channelList = sqlTemplate.query(getSql("selectChannelsSql", "whereBulkLoaderEnabledSql"), new ChannelMapper());
-        return channelList != null && !channelList.isEmpty();
+        boolean enabled = false;
+        for (Channel channel : getChannels(false).values()) {
+            if (channel.isReloadFlag() && channel.getDataLoaderType().equals("bulk")) {
+                enabled = true;
+                break;
+            }
+        }
+        return enabled;
     }
 
     @Override
@@ -141,6 +148,21 @@ public class ConfigurationService extends AbstractService implements IConfigurat
             }
         }
         return masterCount >= 1 && otherCount == 0;
+    }
+
+    @Override
+    public boolean isUseSourceStagingEnabled(String nodeId) {
+        if (isUseSourceStagingEnabled(parameterService)) {
+            ISymmetricEngine targetEngine = AbstractSymmetricEngine.findEngineByNodeId(nodeId);
+            return targetEngine != null && isUseSourceStagingEnabled(targetEngine.getParameterService());
+        }
+        return false;
+    }
+
+    private boolean isUseSourceStagingEnabled(IParameterService parameterService) {
+        return parameterService.is(ParameterConstants.INCOMING_BATCHES_USE_SOURCE_STAGING) && !parameterService.is(ParameterConstants.NODE_OFFLINE)
+                && parameterService.is(ParameterConstants.STREAM_TO_FILE_ENABLED) && (!parameterService.is(ParameterConstants.CLUSTER_LOCKING_ENABLED)
+                        || parameterService.is(ParameterConstants.CLUSTER_STAGING_ENABLED));
     }
 
     @Override
@@ -439,6 +461,12 @@ public class ConfigurationService extends AbstractService implements IConfigurat
     }
 
     @Override
+    public void deleteNodeChannelControl(String nodeId, String channelId) {
+        sqlTemplate.update(getSql("deleteNodeChannelControlSql"), new Object[] { nodeId, channelId });
+        clearCache();
+    }
+
+    @Override
     public void deleteAllChannels() {
         sqlTemplate.update(getSql("deleteAllChannelsSql"));
         clearCache();
@@ -636,6 +664,11 @@ public class ConfigurationService extends AbstractService implements IConfigurat
     @Override
     public Map<String, Channel> getChannels(boolean refreshCache) {
         return cacheManager.getChannels(refreshCache);
+    }
+
+    @Override
+    public Collection<String> getQueues(boolean refreshCache) {
+        return cacheManager.getQueues(refreshCache);
     }
 
     @Override

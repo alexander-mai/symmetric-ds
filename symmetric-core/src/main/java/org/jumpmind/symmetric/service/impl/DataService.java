@@ -24,11 +24,15 @@ import static org.apache.commons.lang3.StringUtils.isNotBlank;
 
 import java.nio.charset.Charset;
 import java.sql.DataTruncation;
-import java.sql.SQLException;
 import java.sql.Types;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -45,8 +49,10 @@ import org.apache.commons.lang3.NotImplementedException;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.text.StringEscapeUtils;
 import org.jumpmind.db.model.Column;
+import org.jumpmind.db.model.Database;
 import org.jumpmind.db.model.Table;
 import org.jumpmind.db.platform.DatabaseInfo;
+import org.jumpmind.db.platform.DatabaseNamesConstants;
 import org.jumpmind.db.platform.IDatabasePlatform;
 import org.jumpmind.db.sql.DmlStatement;
 import org.jumpmind.db.sql.DmlStatement.DmlType;
@@ -61,6 +67,7 @@ import org.jumpmind.db.sql.mapper.NumberMapper;
 import org.jumpmind.db.util.BinaryEncoding;
 import org.jumpmind.db.util.TableRow;
 import org.jumpmind.exception.IoException;
+import org.jumpmind.symmetric.AbstractSymmetricEngine;
 import org.jumpmind.symmetric.ISymmetricEngine;
 import org.jumpmind.symmetric.SymmetricException;
 import org.jumpmind.symmetric.common.Constants;
@@ -106,6 +113,7 @@ import org.jumpmind.symmetric.service.IFileSyncService;
 import org.jumpmind.symmetric.service.INodeService;
 import org.jumpmind.symmetric.service.ITriggerRouterService;
 import org.jumpmind.symmetric.service.impl.TransformService.TransformTableNodeGroupLink;
+import org.jumpmind.util.ExceptionUtils;
 import org.jumpmind.util.FormatUtils;
 
 /**
@@ -114,6 +122,11 @@ import org.jumpmind.util.FormatUtils;
 public class DataService extends AbstractService implements IDataService {
     private ISymmetricEngine engine;
     private IExtensionService extensionService;
+    public static final int RECAPTURE_DATA_COMMIT_LIMIT = 1000;
+    public static final int PROGRESS_LOG_UPDATE_DELAY_MS = 30000;
+    public static final transient String TIMESTAMP_ISO_JSON_FORMAT = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"; // Zulu == UTC is used in transaction ID for stale data
+    public static final transient DateTimeFormatter isoJsonDateTimeFormatter = DateTimeFormatter.ofPattern(TIMESTAMP_ISO_JSON_FORMAT).withZone(ZoneId.from(
+            ZoneOffset.UTC));
 
     public DataService(ISymmetricEngine engine, IExtensionService extensionService) {
         super(engine.getParameterService(), engine.getSymmetricDialect());
@@ -125,6 +138,103 @@ public class DataService extends AbstractService implements IDataService {
     }
 
     protected Map<IHeartbeatListener, Long> lastHeartbeatTimestamps = new HashMap<IHeartbeatListener, Long>();
+
+    public boolean insertReloadEvent(TableReloadRequest request, boolean deleteAtClient) {
+        boolean successful = false;
+        if (request != null) {
+            ITriggerRouterService triggerRouterService = engine.getTriggerRouterService();
+            INodeService nodeService = engine.getNodeService();
+            Node targetNode = nodeService.findNode(request.getTargetNodeId());
+            if (targetNode != null) {
+                TriggerRouter triggerRouter = triggerRouterService.getTriggerRouterForCurrentNode(
+                        request.getTriggerId(), request.getRouterId(), false);
+                if (triggerRouter != null) {
+                    Trigger trigger = triggerRouter.getTrigger();
+                    Router router = triggerRouter.getRouter();
+                    NodeGroupLink link = router.getNodeGroupLink();
+                    Node me = nodeService.findIdentity();
+                    if (link.getSourceNodeGroupId().equals(me.getNodeGroupId())) {
+                        if (link.getTargetNodeGroupId().equals(targetNode.getNodeGroupId())) {
+                            TriggerHistory triggerHistory = lookupTriggerHistory(trigger);
+                            ISqlTransaction transaction = null;
+                            try {
+                                transaction = sqlTemplate.startSqlTransaction();
+                                if (parameterService
+                                        .is(ParameterConstants.INITIAL_LOAD_DELETE_BEFORE_RELOAD)) {
+                                    String overrideDeleteStatement = StringUtils.isNotBlank(request
+                                            .getBeforeCustomSql()) ? request.getBeforeCustomSql()
+                                                    : null;
+                                    insertPurgeEvent(transaction, targetNode, triggerRouter,
+                                            triggerHistory, false, overrideDeleteStatement, -1,
+                                            null);
+                                }
+                                insertReloadEvent(transaction, targetNode, triggerRouter,
+                                        triggerHistory, request.getReloadSelect(), false, -1, null,
+                                        Status.NE, -1);
+                                if (!targetNode.requires13Compatiblity() && deleteAtClient) {
+                                    insertSqlEvent(
+                                            transaction,
+                                            triggerHistory,
+                                            trigger.getChannelId(),
+                                            targetNode,
+                                            String.format(
+                                                    "delete from %s where target_node_id='%s' and source_node_id='%s' and trigger_id='%s' and router_id='%s'",
+                                                    TableConstants
+                                                            .getTableName(
+                                                                    tablePrefix,
+                                                                    TableConstants.SYM_TABLE_RELOAD_REQUEST),
+                                                    request.getTargetNodeId(), request
+                                                            .getSourceNodeId(), request
+                                                                    .getTriggerId(), request.getRouterId()),
+                                            false, -1, null);
+                                }
+                                deleteTableReloadRequest(transaction, request);
+                                transaction.commit();
+                            } catch (Error ex) {
+                                if (transaction != null) {
+                                    transaction.rollback();
+                                }
+                                throw ex;
+                            } catch (RuntimeException ex) {
+                                if (transaction != null) {
+                                    transaction.rollback();
+                                }
+                                throw ex;
+                            } finally {
+                                close(transaction);
+                            }
+                        } else {
+                            log.error(
+                                    "Could not reload table {} for node {} because the router {} target node group id {} did not match",
+                                    new Object[] { trigger.getSourceTableName(), request.getTargetNodeId(),
+                                            request.getRouterId(), link.getTargetNodeGroupId() });
+                        }
+                    } else {
+                        log.error(
+                                "Could not reload table {}  for node {} because the router {} source node group id {} did not match",
+                                new Object[] { trigger.getSourceTableName(), request.getTargetNodeId(), request.getRouterId(),
+                                        link.getSourceNodeGroupId() });
+                    }
+                } else {
+                    log.error(
+                            "Could not reload table for node {} because the trigger router ({}, {}) could not be found",
+                            new Object[] { request.getTargetNodeId(), request.getTriggerId(),
+                                    request.getRouterId() });
+                }
+            } else {
+                log.error("Could not reload table for node {} because the target node could not be found",
+                        request.getTargetNodeId());
+            }
+        }
+        return successful;
+    }
+
+    /**
+     * Helper. Creates an ISO-compliant transaction Id string for specified instant and prefix.
+     */
+    public String generateTransactionIdFromTimestamp(String prefix, Instant instant) {
+        return prefix + isoJsonDateTimeFormatter.format(instant);
+    }
 
     @Override
     public int cancelTableReloadRequest(TableReloadRequest request) {
@@ -175,7 +285,7 @@ public class DataService extends AbstractService implements IDataService {
         if (request.getCreateTime() == null) {
             request.setCreateTime(time);
         }
-        request.setCreateTime(new Date((request.getCreateTime().getTime() / 1000) * 1000));
+        request.setCreateTime(new Date((request.getCreateTime().getTime() / 10) * 10));
         transaction.prepareAndExecute(
                 getSql("insertTableReloadRequest"),
                 new Object[] { request.getReloadSelect(), request.getBeforeCustomSql(),
@@ -398,11 +508,12 @@ public class DataService extends AbstractService implements IDataService {
                     new Object[] { batchId, batchCount, batchId, batchCount, batchId, batchCount,
                             batchId, batchCount, batchId, batchCount, batchId, batchCount, new Date(),
                             batchId, batchCount, batchId, batchCount, batchId, batchCount, loadId, sourceNodeId, new Date(), batchId,
-                            isBulkLoaded, batchId, batchId, loadId, sourceNodeId },
+                            isBulkLoaded, batchId, batchId, loadId, sourceNodeId, loadId, sourceNodeId },
                     new int[] { idType, Types.NUMERIC, idType, Types.NUMERIC, idType, Types.NUMERIC,
                             idType, Types.NUMERIC, idType, Types.NUMERIC, idType, Types.NUMERIC, Types.TIMESTAMP,
                             idType, Types.NUMERIC, idType, Types.NUMERIC, idType, Types.NUMERIC, idType,
-                            Types.VARCHAR, Types.TIMESTAMP, idType, Types.NUMERIC, idType, idType, idType, Types.VARCHAR });
+                            Types.VARCHAR, Types.TIMESTAMP, idType, Types.NUMERIC, idType, idType, idType, Types.VARCHAR, idType,
+                            Types.VARCHAR });
         } else {
             String sql = getSql("updateTableReloadStatusDataLoadedNoParams");
             sql = FormatUtils.replace("batchId", String.valueOf(batchId), sql);
@@ -412,15 +523,43 @@ public class DataService extends AbstractService implements IDataService {
             sql = FormatUtils.replace("isBulkLoaded", isBulkLoaded ? "1" : "0", sql);
             count = transaction.prepareAndExecute(sql);
         }
-        if (count == 0) {
-            log.warn("No load status updated for source node {} load ID {} batch ID {}", sourceNodeId, loadId, batchId);
-        }
-        List<TableReloadStatus> status = transaction.query(getSql("selectTableReloadStatusByLoadIdSourceNodeId"),
+        TableReloadStatus status = null;
+        List<TableReloadStatus> statuses = transaction.query(getSql("selectTableReloadStatusByLoadIdSourceNodeId"),
                 new TableReloadStatusMapper(), new Object[] { loadId, sourceNodeId }, new int[] { idType, Types.VARCHAR });
-        if (status != null && status.size() > 0 && count > 0) {
-            return status.get(0);
+        if (statuses != null && statuses.size() > 0) {
+            status = statuses.get(0);
         }
-        return null;
+        if (count == 0) {
+            if (status != null && !status.isCompleted()) {
+                log.warn("No load status updated for source node {} load ID {} batch ID {}", sourceNodeId, loadId, batchId);
+            } else if (status == null) {
+                log.warn("No load status found for source node {} load ID {} batch ID {}", sourceNodeId, loadId, batchId);
+            }
+            status = null;
+        }
+        return status;
+    }
+
+    @Override
+    public void updateTableReloadStatusFailed(long loadId, String sourceNodeId, long batchId) {
+        ISqlTransaction transaction = null;
+        try {
+            transaction = sqlTemplate.startSqlTransaction();
+            updateTableReloadStatusFailed(transaction, loadId, sourceNodeId, batchId);
+            transaction.commit();
+        } catch (Error ex) {
+            if (transaction != null) {
+                transaction.rollback();
+            }
+            throw ex;
+        } catch (RuntimeException ex) {
+            if (transaction != null) {
+                transaction.rollback();
+            }
+            throw ex;
+        } finally {
+            close(transaction);
+        }
     }
 
     @Override
@@ -535,6 +674,34 @@ public class DataService extends AbstractService implements IDataService {
         }
     }
 
+    private void updateTableReloadStatusFinalizeCount(ISqlTransaction transaction, long loadId, String sourceNodeId, int finalizeBatchCount) {
+        Object[] args = new Object[] { finalizeBatchCount, new Date(), loadId, sourceNodeId };
+        String sql = getSql("updateTableReloadStatusFinalizeCount");
+        int[] types = new int[] { Types.NUMERIC, Types.TIMESTAMP, symmetricDialect.getSqlTypeForIds(), Types.VARCHAR };
+        if (transaction == null) {
+            try {
+                transaction = sqlTemplate.startSqlTransaction();
+                transaction.prepareAndExecute(sql, args, types);
+                transaction.commit();
+            } catch (Error ex) {
+                if (transaction != null) {
+                    transaction.rollback();
+                }
+                throw ex;
+            } catch (RuntimeException ex) {
+                if (transaction != null) {
+                    transaction.rollback();
+                }
+                throw ex;
+            } finally {
+                close(transaction);
+            }
+        } else {
+            transaction.prepareAndExecute(sql,
+                    finalizeBatchCount, new Date(), loadId, sourceNodeId);
+        }
+    }
+
     public void createTableReloadStatus(ISqlTransaction transaction, long loadId, boolean isFullLoad, String sourceNodeId, String targetNodeId) {
         Date now = new Date();
         Object[] argsDelete = new Object[] { loadId, sourceNodeId };
@@ -625,15 +792,9 @@ public class DataService extends AbstractService implements IDataService {
         }
     }
 
-    protected int updateTableReloadRequestsError(long loadId, String sourceNodeId, SqlException e) {
-        if (e.getCause() instanceof SQLException) {
-            SQLException ex = (SQLException) e.getCause();
-            return sqlTemplate.update(getSql("updateTableReloadStatusError"), ex.getErrorCode(), ex.getSQLState(),
-                    ex.getMessage(), loadId, sourceNodeId);
-        } else {
-            return sqlTemplate.update(getSql("updateTableReloadStatusError"), e.getErrorCode(), null, e.getMessage(),
-                    loadId, sourceNodeId);
-        }
+    protected int updateTableReloadRequestsError(long loadId, String sourceNodeId, int errorCode, String sqlState, String message) {
+        return sqlTemplate.update(getSql("updateTableReloadStatusError"), errorCode, StringUtils.left(sqlState, 10), message,
+                loadId, sourceNodeId);
     }
 
     protected class TableReloadRequestMapper implements ISqlRowMapper<TableReloadRequest> {
@@ -689,6 +850,7 @@ public class DataService extends AbstractService implements IDataService {
             request.setLastUpdateTime(rs.getDateTime("last_update_time"));
             request.setLastUpdatedBy(rs.getString("last_update_by"));
             request.setNumBatchesBulkLoaded(rs.getInt("batch_bulk_load_count"));
+            request.setNumRowsBulkLoaded(rs.getLong("row_bulk_load_count"));
             return request;
         }
     }
@@ -808,7 +970,7 @@ public class DataService extends AbstractService implements IDataService {
             Channel normalChannel = channels.get(channelId);
             Channel reloadChannel = channels.get(trigger != null ? trigger.getReloadChannelId()
                     : Constants.CHANNEL_RELOAD);
-            if (normalChannel.isFileSyncFlag()) {
+            if (normalChannel != null && normalChannel.isFileSyncFlag()) {
                 if (reloadChannel != null && reloadChannel.isFileSyncFlag()) {
                     channelId = reloadChannel.getChannelId();
                 }
@@ -851,7 +1013,7 @@ public class DataService extends AbstractService implements IDataService {
                         // Insert new table reload request
                         tableReloadRequest.setLoadId(0l);
                         tableReloadRequest.setProcessed(false);
-                        tableReloadRequest.setCreateTime(new Date());
+                        tableReloadRequest.setCreateTime(null);
                         insertTableReloadRequest(tableReloadRequest);
                         // Start a new load
                         loadId = 0l;
@@ -875,7 +1037,7 @@ public class DataService extends AbstractService implements IDataService {
                         log.info("Queueing up " + (isFullLoad ? "an initial" : "a") + " load to node " + targetNode.getNodeId()
                                 + (isChannelLoad ? " for channel " + channelId : ""));
                     } else {
-                        log.info("Queueing up a reverse " + (isFullLoad ? "initial" : "") + " load to node " + targetNode.getNodeId());
+                        log.info("Queueing up a reverse " + (isFullLoad ? "initial " : "partial ") + "load to node " + targetNode.getNodeId());
                     }
                     /*
                      * Outgoing data events are pointless because we are reloading all data
@@ -900,7 +1062,9 @@ public class DataService extends AbstractService implements IDataService {
                             }
                         }
                         processInfo.setCurrentLoadId(loadId);
+                        String createBy = reverse ? nodeSecurity.getRevInitialLoadCreateBy() : nodeSecurity.getInitialLoadCreateBy();
                         if (reloadRequests != null && reloadRequests.size() > 0) {
+                            createBy = reloadRequests.get(0).getLastUpdateBy();
                             createTableReloadStatus(platform.supportsMultiThreadedTransactions() ? null : transaction,
                                     loadId, isFullLoad, reloadRequests.get(0).getSourceNodeId(), reloadRequests.get(0).getTargetNodeId());
                             for (TableReloadRequest request : reloadRequests) {
@@ -908,12 +1072,13 @@ public class DataService extends AbstractService implements IDataService {
                                         platform.supportsMultiThreadedTransactions() ? null : transaction,
                                         loadId, request);
                             }
+                            if (!isFullLoad && !reverse) {
+                                nodeService.setPartialLoadStarted(transaction, nodeIdRecord, loadId, createBy);
+                            }
                             // force early commit to get load ID on the reload requests and reload status
                             close(transaction);
                             transaction = platform.getSqlTemplate().startSqlTransaction();
                         }
-                        String createBy = reverse ? nodeSecurity.getRevInitialLoadCreateBy()
-                                : nodeSecurity.getInitialLoadCreateBy();
                         List<TriggerHistory> triggerHistories = new ArrayList<TriggerHistory>();
                         if (isFullLoad || isChannelLoad) {
                             triggerHistories.addAll(activeHistories);
@@ -936,9 +1101,11 @@ public class DataService extends AbstractService implements IDataService {
                                         .getActiveTriggerHistories(new Trigger(reloadRequest.getTriggerId(), null)));
                             }
                         }
+                        boolean sortByFk = !(isFullLoad && parameterService.is(ParameterConstants.INITIAL_LOAD_DEFER_CREATE_CONSTRAINTS, false) &&
+                                reloadRequests != null && reloadRequests.size() > 0 && reloadRequests.get(0).isCreateTable());
                         Map<Integer, List<TriggerRouter>> triggerRoutersByHistoryId = triggerRouterService
                                 .fillTriggerRoutersByHistIdAndSortHist(sourceNode.getNodeGroupId(),
-                                        targetNode.getNodeGroupId(), targetNode.getExternalId(), triggerHistories, triggerRouters);
+                                        targetNode.getNodeGroupId(), targetNode.getExternalId(), triggerHistories, triggerRouters, sortByFk);
                         if (isFullLoad) {
                             if (!reverse) {
                                 nodeService.setInitialLoadEnabled(transaction, nodeIdRecord, false, true, loadId, createBy);
@@ -1011,8 +1178,8 @@ public class DataService extends AbstractService implements IDataService {
                         }
                         engine.getStatisticManager().incrementNodesLoaded(1);
                         if (reloadRequests != null && reloadRequests.size() > 0) {
-                            transaction.prepareAndExecute(getSql("updateTableReloadStatusFinalizeCount"),
-                                    finalizeBatchCount, new Date(), loadId, sourceNode.getNodeId());
+                            updateTableReloadStatusFinalizeCount(platform.supportsMultiThreadedTransactions() ? null : transaction, loadId, sourceNode
+                                    .getNodeId(), finalizeBatchCount);
                             int rowsAffected = transaction.prepareAndExecute(getSql("updateProcessedTableReloadRequest"), new Date(), loadId);
                             if (rowsAffected == 0) {
                                 List<TableReloadRequest> requests = transaction.query(getSql("selectTableReloadRequestsByLoadId"),
@@ -1038,11 +1205,10 @@ public class DataService extends AbstractService implements IDataService {
                             transaction.rollback();
                         }
                         if (ex instanceof InvalidSqlException) {
-                            log.warn("Cancelling load " + loadId);
-                            if (ex.getCause() instanceof SqlException) {
-                                log.error(ex.getCause().getMessage());
-                                updateTableReloadRequestsError(loadId, sourceNode.getNodeId(), (SqlException) ex.getCause());
-                            }
+                            InvalidSqlException e = (InvalidSqlException) ex;
+                            updateTableReloadRequestsError(loadId, sourceNode.getNodeId(), e.getErrorCode(), e.getSQLState(),
+                                    ExceptionUtils.unwrapMessages(ex));
+                            log.warn("Cancelling load " + loadId, e);
                             updateTableReloadRequestsCancelled(loadId, sourceNode.getNodeId());
                         } else if (ex instanceof RuntimeException) {
                             throw (RuntimeException) ex;
@@ -1463,17 +1629,28 @@ public class DataService extends AbstractService implements IDataService {
         if (extractRequests != null) {
             requests.putAll(extractRequests);
         }
+        boolean canEngineBulkOperation = (engine.getParameterService().is(ParameterConstants.MSSQL_BULK_EXTRACT_USE_BCP) &&
+                engine.getSymmetricDialect().getTargetPlatform().getName().startsWith(DatabaseNamesConstants.MSSQL)) ||
+                (engine.getParameterService().is(ParameterConstants.ASE_BULK_EXTRACT_USE_BCP) &&
+                        engine.getSymmetricDialect().getTargetPlatform().getName().startsWith(DatabaseNamesConstants.ASE));
+        boolean canBulkOperation = canEngineBulkOperation && isLocalNodeUsingBulkLoad(targetNode.getNodeId());
+        boolean canParentBulkOperation = true;
+        if (extractRequests != null && extractRequests.size() > 0) {
+            canParentBulkOperation = canEngineBulkOperation && isLocalNodeUsingBulkLoad(extractRequests.values().iterator().next().getNodeId());
+        }
+        boolean shouldAbandonParent = canParentBulkOperation && !canBulkOperation;
         String sourceNodeId = engine.getNodeService().findIdentity().getNodeId();
+        String tablePrefix = engine.getParameterService().getTablePrefix().toLowerCase();
         long firstBatchId = 0;
         long totalDataCount = 0;
         for (TriggerHistory triggerHist : triggerHistories) {
-            if (!triggerHist.getTriggerId().startsWith("sym")) {
+            if (!triggerHist.getTriggerId().startsWith(tablePrefix)) {
                 totalDataCount = totalDataCount + 1;
             }
         }
         processInfo.setTotalDataCount(totalDataCount);
         for (TriggerHistory triggerHistory : triggerHistories) {
-            if (!triggerHistory.getSourceTableName().toLowerCase().startsWith("sym")) {
+            if (!triggerHistory.getSourceTableNameLowerCase().startsWith(tablePrefix)) {
                 processInfo.incrementCurrentDataCount();
             }
             List<TriggerRouter> triggerRouters = triggerRoutersByHistoryId.get(triggerHistory
@@ -1510,7 +1687,7 @@ public class DataService extends AbstractService implements IDataService {
                         long rowCount = -1;
                         long parentRequestId = 0;
                         ExtractRequest parentRequest = requests.get(triggerHistory.getTriggerHistoryId());
-                        if (parentRequest != null) {
+                        if (parentRequest != null && !shouldAbandonParent) {
                             Router router = engine.getTriggerRouterService().getRouterById(triggerRouter.getRouterId(), false);
                             if (router != null && router.getRouterType().equals("default")) {
                                 parentRequestId = parentRequest.getRequestId();
@@ -1518,7 +1695,7 @@ public class DataService extends AbstractService implements IDataService {
                             }
                         }
                         if (rowCount == -1) {
-                            rowCount = getDataCountForReload(table, targetNode, selectSql);
+                            rowCount = getDataCountForReload(table, targetNode, selectSql, loadId);
                         }
                         long transformMultiplier = getTransformMultiplier(table, triggerRouter);
                         long startBatchId = 0;
@@ -1529,8 +1706,13 @@ public class DataService extends AbstractService implements IDataService {
                                 numberOfBatches = (long) Math.ceil((rowCount * transformMultiplier) / (channel.getMaxBatchSize() * 1f));
                                 processInfo.setCurrentBatchCount(processInfo.getCurrentBatchCount() + numberOfBatches);
                             }
+                            long maxBatchSize = channel.getMaxBatchSize();
+                            if (canBulkOperation && canParentBulkOperation && channel.getDataLoaderType().equals("bulk")) {
+                                numberOfBatches = 1;
+                                maxBatchSize = rowCount;
+                            }
                             startBatchId = insertRequestedOutgoingBatches(transaction, targetNode, triggerRouter, triggerHistory, selectSql,
-                                    loadId, createBy, reloadChannel, rowCount, channel.getMaxBatchSize(), numberOfBatches);
+                                    loadId, createBy, reloadChannel, rowCount, maxBatchSize, numberOfBatches);
                         } else {
                             startBatchId = insertReloadEvent(transaction, targetNode, triggerRouter, triggerHistory,
                                     selectSql, true, loadId, createBy, Status.LS, null, -1);
@@ -1545,7 +1727,7 @@ public class DataService extends AbstractService implements IDataService {
                                 loadId, sourceNodeId, firstBatchId, endBatchId, numberOfBatches, rowCount);
                         ExtractRequest request = engine.getDataExtractorService().requestExtractRequest(transaction, targetNode.getNodeId(), channel.getQueue(),
                                 triggerRouter, startBatchId, endBatchId, loadId, table.getName(), rowCount, parentRequestId);
-                        if (parentRequestId == 0) {
+                        if (parentRequest == null) {
                             requests.put(triggerHistory.getTriggerHistoryId(), request);
                         }
                     } else {
@@ -1559,7 +1741,7 @@ public class DataService extends AbstractService implements IDataService {
             }
         }
         // Needs to have a "data batch" to give point of reference for setup/finalize batches if no actual data batches
-        if (requests.size() == 0) {
+        if (firstBatchId == 0) {
             long startBatchId = 0;
             if (platform.supportsMultiThreadedTransactions()) {
                 startBatchId = engine.getSequenceService().nextRange(Constants.SEQUENCE_OUTGOING_BATCH, 1);
@@ -1572,7 +1754,7 @@ public class DataService extends AbstractService implements IDataService {
         return requests;
     }
 
-    protected long getDataCountForReload(Table table, Node targetNode, String selectSql) throws SqlException {
+    protected long getDataCountForReload(Table table, Node targetNode, String selectSql, long loadId) throws SqlException {
         long rowCount = -1;
         if (parameterService.is(ParameterConstants.INITIAL_LOAD_USE_ESTIMATED_COUNTS) &&
                 (selectSql == null || StringUtils.isBlank(selectSql) || selectSql.replace(" ", "").equals("1=1"))) {
@@ -1597,8 +1779,7 @@ public class DataService extends AbstractService implements IDataService {
             try {
                 rowCount = getTargetPlatform().getSqlTemplateDirty().queryForLong(sql);
             } catch (SqlException ex) {
-                log.error("Failed to execute row count SQL while starting reload.  " + ex.getMessage() + ", SQL: \"" + sql + "\"");
-                throw new InvalidSqlException(ex);
+                throw new InvalidSqlException("Failed to execute row count SQL for load ID " + loadId + " with: " + sql, ex);
             }
         }
         return rowCount;
@@ -1617,6 +1798,15 @@ public class DataService extends AbstractService implements IDataService {
         }
         transformMultiplier = Math.max(1, transformMultiplier);
         return transformMultiplier;
+    }
+
+    protected boolean isLocalNodeUsingBulkLoad(String nodeId) {
+        ISymmetricEngine targetEngine = AbstractSymmetricEngine.findEngineByNodeId(nodeId);
+        boolean isTargetUsingBulkLoad = targetEngine != null &&
+                ((targetEngine.getParameterService().is("mssql.bulk.load.use.bcp") &&
+                        targetEngine.getSymmetricDialect().getTargetPlatform().getName().startsWith(DatabaseNamesConstants.MSSQL)) ||
+                        (targetEngine.getSymmetricDialect().getTargetPlatform().getName().startsWith(DatabaseNamesConstants.ASE)));
+        return isTargetUsingBulkLoad;
     }
 
     private int insertFileSyncBatchForReload(Node targetNode, long loadId, String createBy,
@@ -2101,6 +2291,19 @@ public class DataService extends AbstractService implements IDataService {
         return id;
     }
 
+    public void insertData(ISqlTransaction transaction, List<Data> datas) {
+        transaction.prepare(getSql("insertIntoDataBulkSql"));
+        int[] types = new int[] { Types.VARCHAR, Types.CHAR, Types.VARCHAR, Types.VARCHAR, Types.VARCHAR, Types.NUMERIC,
+                Types.VARCHAR, Types.VARCHAR, Types.VARCHAR, Types.TIMESTAMP };
+        for (Data data : datas) {
+            Object[] args = new Object[] { data.getTableName(), data.getDataEventType().getCode(), data.getRowData(),
+                    data.getPkData(), data.getOldData(), data.getTriggerHistory() != null ? data.getTriggerHistory().getTriggerHistoryId() : -1,
+                    data.getChannelId(), data.getTransactionId(), data.getSourceNodeId(), data.getCreateTime() };
+            transaction.addRow(data, args, types);
+        }
+        transaction.flush();
+    }
+
     protected void insertDataEvent(ISqlTransaction transaction, DataEvent dataEvent) {
         insertDataEvent(transaction, dataEvent.getDataId(), dataEvent.getBatchId());
     }
@@ -2433,7 +2636,7 @@ public class DataService extends AbstractService implements IDataService {
                 catalogName, schemaName, tableName);
         Map<Integer, List<TriggerRouter>> triggerRoutersByHistoryId = triggerRouterService
                 .fillTriggerRoutersByHistIdAndSortHist(sourceNode.getNodeGroupId(),
-                        targetNode.getNodeGroupId(), targetNode.getExternalId(), triggerHistories);
+                        targetNode.getNodeGroupId(), targetNode.getExternalId(), triggerHistories, false);
         int eventCount = 0;
         ISqlTransaction transaction = null;
         try {
@@ -2640,7 +2843,7 @@ public class DataService extends AbstractService implements IDataService {
             log.info("Could not determine foreign table rows to fix foreign key violation for "
                     + "batch {} table {}", batchName, data.getTableName());
         }
-        Collections.reverse(foreignTableRows);
+        sortTableRowsByForeignKeys(foreignTableRows);
         Set<TableRow> visited = new HashSet<TableRow>();
         boolean foundAllRows = true;
         for (TableRow foreignTableRow : foreignTableRows) {
@@ -2681,6 +2884,27 @@ public class DataService extends AbstractService implements IDataService {
                     "_incoming_error set resolve_ignore = 1 where batch_id = " + batchId + " and node_id = '" + engine.getNodeId() +
                     "' and failed_row_number = " + rowNumber);
         }
+    }
+
+    protected void sortTableRowsByForeignKeys(List<TableRow> tableRows) {
+        List<Table> tables = new ArrayList<Table>();
+        for (TableRow tableRow : tableRows) {
+            tables.add(tableRow.getTable());
+        }
+        List<Table> sortedTables = Database.sortByForeignKeys(tables);
+        Map<Table, Integer> tableMap = new HashMap<Table, Integer>();
+        int index = 0;
+        for (Table table : sortedTables) {
+            tableMap.put(table, index++);
+        }
+        Collections.sort(tableRows, new Comparator<TableRow>() {
+            @Override
+            public int compare(TableRow t1, TableRow t2) {
+                Integer i1 = tableMap.get(t1.getTable());
+                Integer i2 = tableMap.get(t2.getTable());
+                return i1 == null ? -1 : i2 == null ? 1 : i1.compareTo(i2);
+            }
+        });
     }
 
     @Override
@@ -2830,16 +3054,17 @@ public class DataService extends AbstractService implements IDataService {
         return data;
     }
 
-    protected String getCsvDataFor(ISqlTransaction transaction, Trigger trigger, TriggerHistory triggerHistory, String whereClause, boolean pkOnly) {
+    protected String getCsvDataFor(ISqlTransaction transaction, Trigger trigger, TriggerHistory triggerHistory, String whereClause, boolean pkOnly,
+            Table table) {
         String data = null;
         String sql = null;
         try {
             if (pkOnly) {
                 sql = symmetricDialect.createCsvPrimaryKeySql(trigger, triggerHistory,
-                        engine.getConfigurationService().getChannel(trigger.getChannelId()), whereClause);
+                        engine.getConfigurationService().getChannel(trigger.getChannelId()), whereClause, table);
             } else {
                 sql = symmetricDialect.createCsvDataSql(trigger, triggerHistory,
-                        engine.getConfigurationService().getChannel(trigger.getChannelId()), whereClause);
+                        engine.getConfigurationService().getChannel(trigger.getChannelId()), whereClause, table);
             }
         } catch (NotImplementedException e) {
         }
@@ -2863,6 +3088,12 @@ public class DataService extends AbstractService implements IDataService {
             data = data.trim();
         }
         return data;
+    }
+
+    protected String getCsvDataFor(ISqlTransaction transaction, Trigger trigger, TriggerHistory triggerHistory, String whereClause, boolean pkOnly) {
+        Table table = platform.getTableFromCache(trigger.getSourceCatalogName(),
+                trigger.getSourceSchemaName(), trigger.getSourceTableName(), false);
+        return getCsvDataFor(transaction, trigger, triggerHistory, whereClause, pkOnly, table);
     }
 
     @Override
@@ -2960,7 +3191,7 @@ public class DataService extends AbstractService implements IDataService {
         if (gaps.size() > 0) {
             int[] types = new int[] { Types.VARCHAR, Types.NUMERIC, Types.NUMERIC, Types.NUMERIC, Types.TIMESTAMP };
             int maxRowsToFlush = engine.getParameterService().getInt(ParameterConstants.ROUTING_FLUSH_JDBC_BATCH_SIZE);
-            long ts = System.currentTimeMillis();
+            long lastUpdateTimestamp = System.currentTimeMillis();
             int flushCount = 0, totalCount = 0;
             transaction.setInBatchMode(true);
             transaction.prepare(getSql("insertDataGapSql"));
@@ -2972,9 +3203,9 @@ public class DataService extends AbstractService implements IDataService {
                     transaction.flush();
                     flushCount = 0;
                 }
-                if (System.currentTimeMillis() - ts > 30000) {
+                if (System.currentTimeMillis() - lastUpdateTimestamp > PROGRESS_LOG_UPDATE_DELAY_MS) {
                     log.info("Inserted {} of {} new gaps", totalCount, gaps.size());
-                    ts = System.currentTimeMillis();
+                    lastUpdateTimestamp = System.currentTimeMillis();
                 }
             }
             transaction.flush();
@@ -3021,7 +3252,7 @@ public class DataService extends AbstractService implements IDataService {
         if (gaps.size() > 0) {
             int[] types = new int[] { symmetricDialect.getSqlTypeForIds(), symmetricDialect.getSqlTypeForIds() };
             int maxRowsToFlush = engine.getParameterService().getInt(ParameterConstants.ROUTING_FLUSH_JDBC_BATCH_SIZE);
-            long ts = System.currentTimeMillis();
+            long lastUpdateTimestamp = System.currentTimeMillis();
             int flushCount = 0, totalCount = 0;
             transaction.setInBatchMode(true);
             transaction.prepare(getSql("deleteDataGapSql"));
@@ -3031,9 +3262,9 @@ public class DataService extends AbstractService implements IDataService {
                     transaction.flush();
                     flushCount = 0;
                 }
-                if (System.currentTimeMillis() - ts > 30000) {
+                if (System.currentTimeMillis() - lastUpdateTimestamp > PROGRESS_LOG_UPDATE_DELAY_MS) {
                     log.info("Deleted {} of {} old gaps", totalCount, gaps.size());
-                    ts = System.currentTimeMillis();
+                    lastUpdateTimestamp = System.currentTimeMillis();
                 }
             }
             transaction.flush();
@@ -3050,7 +3281,7 @@ public class DataService extends AbstractService implements IDataService {
         if (gaps.size() > 0) {
             int[] types = new int[] { symmetricDialect.getSqlTypeForIds(), symmetricDialect.getSqlTypeForIds() };
             int maxRowsToFlush = engine.getParameterService().getInt(ParameterConstants.ROUTING_FLUSH_JDBC_BATCH_SIZE);
-            long ts = System.currentTimeMillis();
+            long lastUpdateTimestamp = System.currentTimeMillis();
             int flushCount = 0, totalCount = 0;
             transaction.setInBatchMode(true);
             transaction.prepare(getSql("expireDataGapSql"));
@@ -3060,9 +3291,9 @@ public class DataService extends AbstractService implements IDataService {
                     transaction.flush();
                     flushCount = 0;
                 }
-                if (System.currentTimeMillis() - ts > 30000) {
+                if (System.currentTimeMillis() - lastUpdateTimestamp > PROGRESS_LOG_UPDATE_DELAY_MS) {
                     log.info("Expired {} of {} gaps", totalCount, gaps.size());
-                    ts = System.currentTimeMillis();
+                    lastUpdateTimestamp = System.currentTimeMillis();
                 }
             }
             transaction.flush();
@@ -3578,84 +3809,151 @@ public class DataService extends AbstractService implements IDataService {
         data.setChannelId(Constants.CHANNEL_RELOAD);
     }
 
+    /**
+     * Attempts to recapture stale data rows between specified Ids and re-insert them back into sym_data with a new transaction ID. Commits every
+     * RECAPTURE_DATA_COMMIT_LIMIT records to avoid locking sym_data from other processes.
+     * 
+     * @return number of recaptured data rows
+     */
     @Override
     public int reCaptureData(long minDataId, long maxDataId) {
-        List<Data> dataList = findData(minDataId, maxDataId);
-        int count = 0;
-        if (dataList.size() > 0) {
-            count = reCaptureData(dataList);
+        long queryStartDataId = minDataId;
+        long queryEndDataId = Long.min(minDataId + RECAPTURE_DATA_COMMIT_LIMIT - 1, maxDataId);
+        List<Data> dataList = findData(queryStartDataId, queryEndDataId);
+        if (dataList == null || dataList.size() < 1) {
+            return 0;
         }
-        return count;
+        int reCapturedCount = 0;
+        while (queryStartDataId <= maxDataId) {
+            if (dataList.size() > 0) {
+                reCapturedCount += reCaptureData(dataList);
+            }
+            queryStartDataId = ++queryEndDataId;
+            queryEndDataId = Long.min(queryEndDataId + RECAPTURE_DATA_COMMIT_LIMIT - 1, maxDataId);
+            if (queryStartDataId > maxDataId) {
+                break;
+            }
+            dataList = findData(queryStartDataId, queryEndDataId);
+        }
+        return reCapturedCount;
     }
 
+    /**
+     * Attempts to recapture stale data rows and re-insert them back into sym_data with a new transaction ID (all records are in one transaction).
+     * 
+     * @return number of recaptured data rows
+     */
     protected int reCaptureData(List<Data> dataList) {
         List<Data> insertList = new ArrayList<Data>();
-        ISqlTransaction transaction = null;
-        Table table = null;
-        String[] keys = null;
-        Data lastData = null;
-        long ts = System.currentTimeMillis();
+        long lastUpdateTimestamp = 0;
+        String recaptureTransactionId = this.generateTransactionIdFromTimestamp("recapture-", Instant.now());
+        int insertedCount = 0;
         try {
             for (Data data : dataList) {
-                lastData = data;
-                TriggerHistory hist = data.getTriggerHistory();
-                Set<TriggerRouter> triggerRouters = engine.getTriggerRouterService().getTriggerRouterForTableForCurrentNode(
-                        hist.getSourceCatalogName(), hist.getSourceSchemaName(), hist.getSourceTableName(), false);
-                table = platform.getTableFromCache(hist.getSourceCatalogName(), hist.getSourceSchemaName(), hist.getSourceTableName(), false);
-                if (triggerRouters != null && triggerRouters.size() > 0 && table != null && data.getDataEventType().isDml() && !data.isPreRouted()) {
-                    Trigger trigger = triggerRouters.iterator().next().getTrigger();
-                    table = table.copyAndFilterColumns(hist.getParsedColumnNames(), hist.getParsedPkColumnNames(), true, false);
-                    if (data.getDataEventType() == DataEventType.INSERT) {
-                        keys = data.toParsedRowData();
-                        if (keys != null && keys.length >= table.getPrimaryKeyColumnCount()) {
-                            keys = ArrayUtils.subarray(keys, 0, table.getPrimaryKeyColumnCount());
-                        }
-                    } else {
-                        keys = data.toParsedPkData();
-                    }
-                    Object[] values = platform.getObjectValues(engine.getSymmetricDialect().getBinaryEncoding(), keys, table.getPrimaryKeyColumns());
-                    if (keys == null || values == null) {
-                        continue;
-                    }
-                    Row row = new Row(keys.length);
-                    String[] keyNames = table.getPrimaryKeyColumnNames();
-                    for (int i = 0; i < keyNames.length && i < values.length; i++) {
-                        row.put(keyNames[i], values[i]);
-                    }
-                    DmlStatement st = platform.createDmlStatement(DmlType.WHERE, hist.getSourceCatalogName(), hist.getSourceSchemaName(),
-                            hist.getSourceTableName(), table.getPrimaryKeyColumns(), table.getColumns(), DmlStatement.getNullKeyValues(keys), null);
-                    String whereClause = st.buildDynamicSql(symmetricDialect.getBinaryEncoding(), row, false,
-                            platform.getDatabaseInfo().isJdbcTimestampAllowed()).substring(6);
-                    String delimiter = platform.getDatabaseInfo().getSqlCommandDelimiter();
-                    if (delimiter != null && delimiter.length() > 0) {
-                        whereClause = whereClause.substring(0, whereClause.length() - delimiter.length());
-                    }
-                    String rowData = null;
-                    String pkData = data.getPkData();
-                    transaction = sqlTemplate.startSqlTransaction();
-                    if (data.getDataEventType() == DataEventType.INSERT || data.getDataEventType() == DataEventType.UPDATE) {
-                        rowData = getCsvDataFor(transaction, trigger, hist, whereClause, false);
-                    }
-                    if (rowData != null && data.getDataEventType() == DataEventType.INSERT) {
-                        pkData = getCsvDataFor(transaction, trigger, hist, whereClause, true);
-                    }
-                    close(transaction);
-                    transaction = null;
-                    if (rowData != null && (data.getDataEventType() == DataEventType.INSERT || data.getDataEventType() == DataEventType.UPDATE)) {
-                        data.setDataEventType(DataEventType.UPDATE);
-                        data.setRowData(rowData);
-                        data.setPkData(pkData);
-                    } else if (rowData == null && data.getDataEventType() == DataEventType.DELETE) {
-                        data.setPkData(pkData);
-                    }
-                    if (hasColumnDataIntegrity(data, hist)) {
-                        insertList.add(data);
-                    }
-                    data.setTransactionId("recapture-" + ts);
+                Data recapturedData = fetchRecapturedData(data, recaptureTransactionId);
+                if (recapturedData == null) {
+                    continue;
+                }
+                insertList.add(recapturedData);
+                if (System.currentTimeMillis() - lastUpdateTimestamp > PROGRESS_LOG_UPDATE_DELAY_MS) {
+                    lastUpdateTimestamp = System.currentTimeMillis();
+                    log.info("Recaptured stale data_id={}, table={}, list.size={}, transactionid={}", recapturedData.getDataId(), recapturedData.getTableName(),
+                            dataList.size(), recaptureTransactionId);
                 }
             }
+            insertedCount = insertRecapturedData(insertList);
         } catch (RuntimeException e) {
-            if (table != null && keys != null && lastData != null) {
+            if (insertedCount == 0 && insertList.size() > 0) {
+                insertedCount = insertRecapturedData(insertList);
+            }
+        }
+        return insertedCount;
+    }
+
+    /**
+     * Attempts to recapture expired data row, which is still relevant and assigns a new transaction ID
+     * 
+     * @return recaptured data row
+     */
+    protected Data fetchRecapturedData(Data data, String recaptureTransactionId) {
+        if (data == null) {
+            return null;
+        }
+        if (data.isPreRouted() || !(data.getDataEventType().isDml())) {
+            return null;
+        }
+        Table table = null;
+        String[] keys = null;
+        ISqlTransaction transaction = null;
+        try {
+            TriggerHistory hist = data.getTriggerHistory();
+            if (hist == null) {
+                log.warn("Unable to recapture stale data_id={} because table={} no longer has trigger history! channel_id={}", data.getDataId(), data
+                        .getTableName(), data.getChannelId());
+                return null;
+            }
+            String fullTableName = hist.getSourceCatalogName() + "." + hist.getSourceSchemaName() + "." + hist.getSourceTableName();
+            Set<TriggerRouter> triggerRouters = engine.getTriggerRouterService().getTriggerRouterForTableForCurrentNode(
+                    hist.getSourceCatalogName(), hist.getSourceSchemaName(), hist.getSourceTableName(), false);
+            if (triggerRouters == null || triggerRouters.size() <= 0) {
+                log.warn("Unable to recapture stale data_id={} because table={} no longer has a trigger-router! channel_id={}", data.getDataId(),
+                        fullTableName, data.getChannelId());
+                return null;
+            }
+            table = platform.getTableFromCache(hist.getSourceCatalogName(), hist.getSourceSchemaName(), hist.getSourceTableName(), false);
+            if (table == null) {
+                log.warn("Unable to recapture stale data_id={} because table={} was not found!)", data.getDataId(), fullTableName);
+                return null;
+            }
+            Trigger trigger = triggerRouters.iterator().next().getTrigger();
+            table = table.copyAndFilterColumns(hist.getParsedColumnNames(), hist.getParsedPkColumnNames(), true, false);
+            keys = recaptureKeysForData(table, data);
+            Object[] values = platform.getObjectValues(engine.getSymmetricDialect().getBinaryEncoding(), keys, table.getPrimaryKeyColumns());
+            if (keys == null || values == null) {
+                return null;
+            }
+            String whereClause = recaptureWhereFilterForKeys(table, hist, keys, values);
+            String actualRowData = null;
+            String pkData = data.getPkData();
+            String dataSummary4Log = String.format("data_id=%d, event=%s, table=%s, PK: %s", data.getDataId(),
+                    data.getDataEventType().toString(), table.getFullyQualifiedTableName(), (whereClause.length() <= 100) ? whereClause
+                            : whereClause.substring(0, 100));
+            // Look this record up:
+            transaction = sqlTemplate.startSqlTransaction();
+            actualRowData = getCsvDataFor(transaction, trigger, hist, whereClause, false, table);
+            if (actualRowData != null && data.getDataEventType() == DataEventType.INSERT) {
+                pkData = getCsvDataFor(transaction, trigger, hist, whereClause, true, table);
+            }
+            close(transaction);
+            transaction = null;
+            Data recapturedData = null;
+            if (data.getDataEventType() == DataEventType.INSERT || data.getDataEventType() == DataEventType.UPDATE) {
+                if (actualRowData == null) {
+                    log.info("Skipped recapture of stale data because record no longer exists in database. {}", dataSummary4Log);
+                    return null;
+                }
+                recapturedData = data;
+                recapturedData.setRowData(actualRowData);
+                recapturedData.setPkData(pkData);
+                recapturedData.setDataEventType(DataEventType.UPDATE);
+            } else if (data.getDataEventType() == DataEventType.DELETE) {
+                if (actualRowData != null) {
+                    log.info("Skipped recapture of stale data because record exists in database. {}", dataSummary4Log);
+                    return null;
+                }
+                recapturedData = data;
+            }
+            // Double-check that stale data still conforms to table definition:
+            if (!hasColumnDataIntegrity(recapturedData, hist)) {
+                log.warn("Unable to recapture stale data because row values no longer match tables columns! {}", dataSummary4Log);
+                return null;
+            }
+            if (log.isDebugEnabled()) {
+                log.debug("Recaptured stale data. {}", dataSummary4Log);
+            }
+            return recapturedData;
+        } catch (RuntimeException e) {
+            if (table != null && keys != null) {
                 Column[] columns = table.getPrimaryKeyColumns();
                 String[] names = new String[columns.length];
                 String[] types = new String[columns.length];
@@ -3665,21 +3963,44 @@ public class DataService extends AbstractService implements IDataService {
                     types[i++] = col.getMappedType();
                 }
                 StringBuilder failureMessage = new StringBuilder();
-                failureMessage.append("Failed to recapture for data ").append(lastData.getDataId());
-                failureMessage.append(" event type ").append(lastData.getDataEventType().toString());
+                failureMessage.append("Failed to recapture for data ").append(data.getDataId());
+                failureMessage.append(" event type ").append(data.getDataEventType().toString());
                 failureMessage.append(" table ").append(table.getName());
                 failureMessage.append(" with primary key ").append(ArrayUtils.toString(names));
                 failureMessage.append(" and types ").append(ArrayUtils.toString(types)).append("\n");
-                lastData.writeCsvDataDetails(failureMessage);
+                data.writeCsvDataDetails(failureMessage);
                 log.info(failureMessage.toString());
+            } else {
+                log.warn("Exception during recapture of stale data_id={}; table={}; Event type={}; Message={}", data.getDataId(), data.getTableName(), data
+                        .getDataEventType().toString(), e.getMessage());
             }
             throw e;
+        } catch (Exception ex) {
+            log.error("Non-RuntimeException during recapture of stale data_id={}; table={}; Event type={}; Message={}", data.getDataId(), data.getTableName(),
+                    data.getDataEventType().toString(), ex.getMessage());
+            throw ex;
         } finally {
-            close(transaction);
+            if (transaction != null) {
+                close(transaction);
+                transaction = null;
+            }
         }
+    }
+
+    /**
+     * Inserts recaptured data back into sym_data
+     * 
+     * @return number of inserted rows
+     */
+    protected int insertRecapturedData(List<Data> insertList) {
+        if (insertList == null || insertList.size() < 0) {
+            return 0;
+        }
+        ISqlTransaction transaction = null;
         try {
             transaction = sqlTemplate.startSqlTransaction();
-            for (Data data : insertList) {
+            for (int i = 0; i < insertList.size(); i++) {
+                Data data = insertList.get(i);
                 insertData(transaction, data);
             }
             transaction.commit();
@@ -3689,9 +4010,47 @@ public class DataService extends AbstractService implements IDataService {
             }
             throw ex;
         } finally {
-            close(transaction);
+            if (transaction != null) {
+                close(transaction);
+            }
         }
         return insertList.size();
+    }
+
+    /**
+     * Looks up values of primary keys for specified data row object
+     */
+    protected String[] recaptureKeysForData(Table table, Data data) {
+        String[] keys = null;
+        if (data.getDataEventType() == DataEventType.INSERT) {
+            keys = data.toParsedRowData();
+            if (keys != null && keys.length >= table.getPrimaryKeyColumnCount()) {
+                keys = ArrayUtils.subarray(keys, 0, table.getPrimaryKeyColumnCount());
+            }
+        } else {
+            keys = data.toParsedPkData();
+        }
+        return keys;
+    }
+
+    /**
+     * Extracts filter for a where clause for specified values of primary keys
+     */
+    protected String recaptureWhereFilterForKeys(Table table, TriggerHistory hist, String[] keys, Object[] values) {
+        Row row = new Row(keys.length);
+        String[] keyNames = table.getPrimaryKeyColumnNames();
+        for (int i = 0; i < keyNames.length && i < values.length; i++) {
+            row.put(keyNames[i], values[i]);
+        }
+        DmlStatement st = platform.createDmlStatement(DmlType.WHERE, hist.getSourceCatalogName(), hist.getSourceSchemaName(),
+                hist.getSourceTableName(), table.getPrimaryKeyColumns(), table.getColumns(), DmlStatement.getNullKeyValues(keys), null);
+        String whereClause = st.buildDynamicSql(symmetricDialect.getBinaryEncoding(), row, false,
+                platform.getDatabaseInfo().isJdbcTimestampAllowed()).substring(6);
+        String delimiter = platform.getDatabaseInfo().getSqlCommandDelimiter();
+        if (delimiter != null && delimiter.length() > 0) {
+            whereClause = whereClause.substring(0, whereClause.length() - delimiter.length());
+        }
+        return whereClause;
     }
 
     protected boolean hasColumnDataIntegrity(Data data, TriggerHistory hist) {

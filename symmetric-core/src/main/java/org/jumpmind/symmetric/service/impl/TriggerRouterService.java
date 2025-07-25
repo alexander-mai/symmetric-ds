@@ -375,7 +375,8 @@ public class TriggerRouterService extends AbstractService implements ITriggerRou
         synchronized (activeTriggerHistories) {
             for (TriggerHistory triggerHistory : activeTriggerHistories) {
                 if ((!triggerHistory.getTriggerId().equals(trigger.getTriggerId()) ||
-                        ((trigger.isSourceTableNameWildCarded() || trigger.isSourceCatalogNameWildCarded() || trigger.isSourceSchemaNameWildCarded()) &&
+                        ((trigger.isSourceTableNameWildCarded() || trigger.isSourceCatalogNameWildCarded() || trigger.isSourceSchemaNameWildCarded() || trigger
+                                .isSourceTableNameExpanded()) &&
                                 (oldhist == null || triggerHistory.getTriggerHistoryId() != oldhist.getTriggerHistoryId()))) &&
                         ((triggerHistory.getNameForDeleteTrigger() != null && triggerHistory.getNameForDeleteTrigger().equals(triggerName)) ||
                                 (triggerHistory.getNameForInsertTrigger() != null && triggerHistory.getNameForInsertTrigger().equals(triggerName)) ||
@@ -589,8 +590,7 @@ public class TriggerRouterService extends AbstractService implements ITriggerRou
                 TableConstants.getTableName(tablePrefix, TableConstants.SYM_COMPARE_TABLE_STATUS).equals(tableName)) {
             trigger.setChannelId(Constants.CHANNEL_MONITOR);
             trigger.setUseCaptureOldData(true);
-        } else if (TableConstants.getTableName(tablePrefix, TableConstants.SYM_FILE_SNAPSHOT)
-                .equals(tableName)) {
+        } else if (TableConstants.getTableName(tablePrefix, TableConstants.SYM_FILE_SNAPSHOT).equals(tableName)) {
             trigger.setChannelId(Constants.CHANNEL_DYNAMIC);
             trigger.setChannelExpression("$(curTriggerValue).$(curColumnPrefix)" + platform.alterCaseToMatchDatabaseDefaultCase("channel_id"));
             trigger.setReloadChannelId(Constants.CHANNEL_FILESYNC_RELOAD);
@@ -600,6 +600,15 @@ public class TriggerRouterService extends AbstractService implements ITriggerRou
             trigger.setSyncOnInsert(syncEnabled);
             trigger.setSyncOnUpdate(syncEnabled); // Changed to false because of issues with the traffic file
             trigger.setSyncOnDelete(false);
+        } else if (TableConstants.getTableName(tablePrefix, TableConstants.SYM_NODE).equals(tableName) ||
+                TableConstants.getTableName(tablePrefix, TableConstants.SYM_NODE_SECURITY).equals(tableName) ||
+                TableConstants.getTableName(tablePrefix, TableConstants.SYM_INCOMING_ERROR).equals(tableName) ||
+                TableConstants.getTableName(tablePrefix, TableConstants.SYM_OUTGOING_ERROR).equals(tableName) ||
+                TableConstants.getTableName(tablePrefix, TableConstants.SYM_CONSOLE_USER).equals(tableName) ||
+                TableConstants.getTableName(tablePrefix, TableConstants.SYM_CONSOLE_USER_HIST).equals(tableName) ||
+                TableConstants.getTableName(tablePrefix, TableConstants.SYM_CONSOLE_ROLE).equals(tableName) ||
+                TableConstants.getTableName(tablePrefix, TableConstants.SYM_CONSOLE_ROLE_PRIVILEGE).equals(tableName)) {
+            trigger.setChannelId(Constants.CHANNEL_SYSTEM);
         } else {
             trigger.setChannelId(Constants.CHANNEL_CONFIG);
         }
@@ -609,16 +618,11 @@ public class TriggerRouterService extends AbstractService implements ITriggerRou
             trigger.setSyncOnUpdate(false);
             trigger.setSyncOnDelete(false);
         }
-        if (!TableConstants.getTableName(tablePrefix, TableConstants.SYM_NODE_HOST)
-                .equals(tableName) &&
-                !TableConstants.getTableName(tablePrefix, TableConstants.SYM_NODE)
-                        .equals(tableName) &&
-                !TableConstants.getTableName(tablePrefix, TableConstants.SYM_NODE_SECURITY)
-                        .equals(tableName) &&
-                !TableConstants.getTableName(tablePrefix, TableConstants.SYM_TABLE_RELOAD_REQUEST)
-                        .equals(tableName) &&
-                !TableConstants.getTableName(tablePrefix, TableConstants.SYM_FILE_SNAPSHOT)
-                        .equals(tableName)) {
+        if (!TableConstants.getTableName(tablePrefix, TableConstants.SYM_NODE_HOST).equals(tableName) &&
+                !TableConstants.getTableName(tablePrefix, TableConstants.SYM_NODE).equals(tableName) &&
+                !TableConstants.getTableName(tablePrefix, TableConstants.SYM_NODE_SECURITY).equals(tableName) &&
+                !TableConstants.getTableName(tablePrefix, TableConstants.SYM_TABLE_RELOAD_REQUEST).equals(tableName) &&
+                !TableConstants.getTableName(tablePrefix, TableConstants.SYM_FILE_SNAPSHOT).equals(tableName)) {
             trigger.setUseCaptureLobs(true);
         }
         // little trick to force the rebuild of SymmetricDS triggers every time
@@ -980,7 +984,7 @@ public class TriggerRouterService extends AbstractService implements ITriggerRou
             String sourceNodeGroupId, String targetNodeGroupId) {
         return enhanceTriggerRouters(sqlTemplate.query(
                 getTriggerRouterSql("activeTriggersForReloadSql"), new TriggerRouterMapper(),
-                sourceNodeGroupId, targetNodeGroupId, Constants.CHANNEL_CONFIG));
+                sourceNodeGroupId, targetNodeGroupId, Constants.CHANNEL_CONFIG, Constants.CHANNEL_SYSTEM));
     }
 
     public TriggerRouter findTriggerRouterById(String triggerId, String routerId) {
@@ -1934,41 +1938,48 @@ public class TriggerRouterService extends AbstractService implements ITriggerRou
                 ts = System.currentTimeMillis();
                 List<TriggerHistory> activeTriggerHistories = getActiveTriggerHistories();
                 context.incrementActiveTriggerHistoriesTime(System.currentTimeMillis() - ts);
-                Map<Trigger, Table> triggersToProcess = new HashMap<Trigger, Table>();
+                Map<String, List<TriggerTableSupportingInfo>> triggerToTableSupportingInfo = getTriggerToTableSupportingInfo(
+                        triggersForCurrentNode, activeTriggerHistories, false, context);
+                Map<Trigger, List<Table>> triggersToProcess = new HashMap<Trigger, List<Table>>();
                 for (Table table : tables) {
                     IDatabasePlatform targetPlatform = symmetricDialect.getTargetPlatform(table.getName());
                     for (Trigger trigger : triggersForCurrentNode) {
                         if (trigger.matches(table, targetPlatform.getDefaultCatalog(), targetPlatform.getDefaultSchema(), ignoreCase) &&
                                 (!trigger.isSourceTableNameWildCarded() || !trigger.isSourceTableNameExpanded()
                                         || !containsExactMatchForSourceTableName(table, triggersForCurrentNode, ignoreCase))) {
-                            triggersToProcess.put(trigger, table);
+                            List<Table> l = triggersToProcess.get(trigger);
+                            if (l == null) {
+                                l = new ArrayList<Table>();
+                                triggersToProcess.put(trigger, l);
+                            }
+                            l.add(table);
                         }
                     }
                 }
-                Map<String, List<TriggerTableSupportingInfo>> triggerToTableSupportingInfo = getTriggerToTableSupportingInfo(
-                        new ArrayList<Trigger>(triggersToProcess.keySet()), activeTriggerHistories, false, context);
                 if (triggersToProcess.size() > 0) {
                     context.incrementTriggersToSyncCount(triggersToProcess.size());
-                    for (Map.Entry<Trigger, Table> entry : triggersToProcess.entrySet()) {
+                    for (Map.Entry<Trigger, List<Table>> entry : triggersToProcess.entrySet()) {
                         Trigger trigger = entry.getKey();
-                        Table table = entry.getValue();
+                        List<Table> l = entry.getValue();
                         List<TriggerTableSupportingInfo> triggerTableSupportingInfoList = triggerToTableSupportingInfo.get(trigger.getTriggerId());
-                        TriggerTableSupportingInfo triggerTableSupportingInfo = null;
-                        for (TriggerTableSupportingInfo t : triggerTableSupportingInfoList) {
-                            if (getFullyQualifiedTableName(t.getTable()).equals(getFullyQualifiedTableName(table))) {
-                                triggerTableSupportingInfo = t;
-                                break;
+                        for (Table table : l) {
+                            TriggerTableSupportingInfo triggerTableSupportingInfo = null;
+                            for (TriggerTableSupportingInfo t : triggerTableSupportingInfoList) {
+                                if (getFullyQualifiedTableName(t.getTable()).equals(getFullyQualifiedTableName(table))) {
+                                    triggerTableSupportingInfo = t;
+                                    break;
+                                }
                             }
-                        }
-                        if (triggerTableSupportingInfo != null) {
-                            log.info("Synchronizing triggers for {}", table.getFullyQualifiedTableName());
-                            ts = System.currentTimeMillis();
-                            updateOrCreateDatabaseTriggers(trigger, triggerTableSupportingInfo.getTable(), null, force, true, activeTriggerHistories,
-                                    triggerTableSupportingInfo, context);
-                            context.incrementUpdateOrCreateDatabaseTriggersTime(System.currentTimeMillis() - ts);
-                            log.info("Done synchronizing triggers for {}", table.getFullyQualifiedTableName());
-                        } else {
-                            handleTableNotFound(trigger, activeTriggerHistories, context);
+                            if (triggerTableSupportingInfo != null) {
+                                log.info("Synchronizing triggers for {}", table.getFullyQualifiedTableName());
+                                ts = System.currentTimeMillis();
+                                updateOrCreateDatabaseTriggers(trigger, triggerTableSupportingInfo.getTable(), null, force, true, activeTriggerHistories,
+                                        triggerTableSupportingInfo, context);
+                                context.incrementUpdateOrCreateDatabaseTriggersTime(System.currentTimeMillis() - ts);
+                                log.info("Done synchronizing triggers for {}", table.getFullyQualifiedTableName());
+                            } else {
+                                handleTableNotFound(trigger, activeTriggerHistories, context);
+                            }
                         }
                     }
                 }
@@ -2096,19 +2107,19 @@ public class TriggerRouterService extends AbstractService implements ITriggerRou
                 if (trigger.isSyncOnInsert()) {
                     insertTriggerName = getTriggerName(DataEventType.INSERT,
                             maxTriggerNameLength, trigger, modifiedTable, activeTriggerHistories, latestHistoryBeforeRebuild, triggerNamesGeneratedThisSession)
-                                    .toUpperCase();
+                            .toUpperCase();
                     triggerNamesGeneratedThisSession.add(insertTriggerName);
                 }
                 if (trigger.isSyncOnUpdate()) {
                     updateTriggerName = getTriggerName(DataEventType.UPDATE,
                             maxTriggerNameLength, trigger, modifiedTable, activeTriggerHistories, latestHistoryBeforeRebuild, triggerNamesGeneratedThisSession)
-                                    .toUpperCase();
+                            .toUpperCase();
                     triggerNamesGeneratedThisSession.add(updateTriggerName);
                 }
                 if (trigger.isSyncOnDelete()) {
                     deleteTriggerName = getTriggerName(DataEventType.DELETE,
                             maxTriggerNameLength, trigger, modifiedTable, activeTriggerHistories, latestHistoryBeforeRebuild, triggerNamesGeneratedThisSession)
-                                    .toUpperCase();
+                            .toUpperCase();
                     triggerNamesGeneratedThisSession.add(deleteTriggerName);
                 }
                 TriggerTableSupportingInfo triggerTableSupportingInfo = new TriggerTableSupportingInfo(trigger.getTriggerId(), insertTriggerName,
@@ -2896,18 +2907,22 @@ public class TriggerRouterService extends AbstractService implements ITriggerRou
 
     @Override
     public Map<Integer, List<TriggerRouter>> fillTriggerRoutersByHistIdAndSortHist(
-            String sourceNodeGroupId, String targetNodeGroupId, String targetExternalId, List<TriggerHistory> triggerHistories) {
+            String sourceNodeGroupId, String targetNodeGroupId, String targetExternalId, List<TriggerHistory> triggerHistories, boolean sortByFk) {
         return fillTriggerRoutersByHistIdAndSortHist(sourceNodeGroupId, targetNodeGroupId, targetExternalId, triggerHistories,
-                getAllTriggerRoutersForReloadForCurrentNode(sourceNodeGroupId, targetNodeGroupId));
+                getAllTriggerRoutersForReloadForCurrentNode(sourceNodeGroupId, targetNodeGroupId), sortByFk);
     }
 
     @Override
     public Map<Integer, List<TriggerRouter>> fillTriggerRoutersByHistIdAndSortHist(
             String sourceNodeGroupId, String targetNodeGroupId, String targetExternalId, List<TriggerHistory> triggerHistories,
-            List<TriggerRouter> triggerRouters) {
+            List<TriggerRouter> triggerRouters, boolean sortByFk) {
         final Map<Integer, List<TriggerRouter>> triggerRoutersByHistoryId = fillTriggerRoutersByHistId(
                 sourceNodeGroupId, targetNodeGroupId, targetExternalId, triggerHistories, triggerRouters);
-        final List<Table> sortedTables = getSortedTablesFor(triggerHistories);
+        List<Table> tables = null;
+        if (sortByFk) {
+            tables = getSortedTablesFor(triggerHistories);
+        }
+        final List<Table> sortedTables = tables;
         Comparator<TriggerHistory> comparator = new Comparator<TriggerHistory>() {
             public int compare(TriggerHistory o1, TriggerHistory o2) {
                 List<TriggerRouter> triggerRoutersForTriggerHist1 = triggerRoutersByHistoryId
@@ -2931,26 +2946,29 @@ public class TriggerRouterService extends AbstractService implements ITriggerRou
                 } else if (intialLoadOrder1 > intialLoadOrder2) {
                     return 1;
                 }
-                Table table1 = null;
-                if (!o1.getSourceTableName().startsWith(tablePrefix)) {
-                    table1 = getTargetPlatform().getTableFromCache(o1.getSourceCatalogName(),
-                            o1.getSourceSchemaName(), o1.getSourceTableName(), false);
+                if (sortByFk) {
+                    Table table1 = null;
+                    if (!o1.getSourceTableName().startsWith(tablePrefix)) {
+                        table1 = getTargetPlatform().getTableFromCache(o1.getSourceCatalogName(),
+                                o1.getSourceSchemaName(), o1.getSourceTableName(), false);
+                    }
+                    if (table1 == null) {
+                        platform.getTableFromCache(o1.getSourceCatalogName(),
+                                o1.getSourceSchemaName(), o1.getSourceTableName(), false);
+                    }
+                    Table table2 = null;
+                    if (!o2.getSourceTableName().startsWith(tablePrefix)) {
+                        table2 = getTargetPlatform().getTableFromCache(o2.getSourceCatalogName(),
+                                o2.getSourceSchemaName(), o2.getSourceTableName(), false);
+                    }
+                    if (table2 == null) {
+                        platform.getTableFromCache(o2.getSourceCatalogName(),
+                                o2.getSourceSchemaName(), o2.getSourceTableName(), false);
+                    }
+                    return Integer.valueOf(sortedTables.indexOf(table1)).compareTo(Integer.valueOf(sortedTables
+                            .indexOf(table2)));
                 }
-                if (table1 == null) {
-                    platform.getTableFromCache(o1.getSourceCatalogName(),
-                            o1.getSourceSchemaName(), o1.getSourceTableName(), false);
-                }
-                Table table2 = null;
-                if (!o2.getSourceTableName().startsWith(tablePrefix)) {
-                    table2 = getTargetPlatform().getTableFromCache(o2.getSourceCatalogName(),
-                            o2.getSourceSchemaName(), o2.getSourceTableName(), false);
-                }
-                if (table2 == null) {
-                    platform.getTableFromCache(o2.getSourceCatalogName(),
-                            o2.getSourceSchemaName(), o2.getSourceTableName(), false);
-                }
-                return Integer.valueOf(sortedTables.indexOf(table1)).compareTo(Integer.valueOf(sortedTables
-                        .indexOf(table2)));
+                return o1.getSourceTableName().compareTo(o2.getSourceTableName());
             };
         };
         Collections.sort(triggerHistories, comparator);

@@ -47,6 +47,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.StringReader;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.charset.Charset;
@@ -83,6 +84,7 @@ import org.jumpmind.db.model.PlatformColumn;
 import org.jumpmind.db.model.Reference;
 import org.jumpmind.db.model.Table;
 import org.jumpmind.db.model.Transaction;
+import org.jumpmind.db.model.Trigger;
 import org.jumpmind.db.model.TypeMap;
 import org.jumpmind.db.platform.PermissionResult.Status;
 import org.jumpmind.db.sql.DmlStatement;
@@ -93,6 +95,7 @@ import org.jumpmind.db.sql.ISqlTransaction;
 import org.jumpmind.db.sql.Row;
 import org.jumpmind.db.sql.SqlException;
 import org.jumpmind.db.sql.SqlScript;
+import org.jumpmind.db.sql.SqlScriptReader;
 import org.jumpmind.db.sql.SqlTemplateSettings;
 import org.jumpmind.db.util.BinaryEncoding;
 import org.jumpmind.exception.IoException;
@@ -131,17 +134,26 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
     protected Boolean supportsMultiThreadedTransactions;
     protected boolean supportsTruncate = true;
     protected String sourceNodeId;
+    protected DatabaseVersion databaseVersion;
 
     public AbstractDatabasePlatform(SqlTemplateSettings settings) {
         this.settings = settings;
     }
 
+    @Override
+    public void shutdown() {
+        // Default implementation does nothing. Override at the specific platforms as needed.
+    }
+
+    @Override
     public DatabaseInfo getDatabaseInfo() {
         return getDdlBuilder().getDatabaseInfo();
     }
 
+    @Override
     abstract public ISqlTemplate getSqlTemplate();
 
+    @Override
     abstract public ISqlTemplate getSqlTemplateDirty();
 
     @Override
@@ -170,22 +182,27 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return DmlStatementFactory.getInstance().create(getName(), options);
     }
 
+    @Override
     public IDdlReader getDdlReader() {
         return ddlReader;
     }
 
+    @Override
     public IDdlBuilder getDdlBuilder() {
         return ddlBuilder;
     }
 
+    @Override
     public void setClearCacheModelTimeoutInMs(long clearCacheModelTimeoutInMs) {
         this.clearCacheModelTimeoutInMs = clearCacheModelTimeoutInMs;
     }
 
+    @Override
     public long getClearCacheModelTimeoutInMs() {
         return clearCacheModelTimeoutInMs;
     }
 
+    @Override
     public void dropTables(boolean continueOnError, Table... tables) {
         Database db = new Database();
         for (Table table : tables) {
@@ -194,17 +211,20 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         dropDatabase(db, continueOnError);
     }
 
+    @Override
     public void dropDatabase(Database database, boolean continueOnError) {
         String sql = ddlBuilder.dropTables(database);
         new SqlScript(sql, getSqlTemplate(), !continueOnError, null).execute(getDatabaseInfo().isRequiresAutoCommitForDdl());
     }
 
+    @Override
     public void createTables(boolean dropTablesFirst, boolean continueOnError, Table... tables) {
         Database database = new Database();
         database.addTables(tables);
         createDatabase(database, dropTablesFirst, continueOnError);
     }
 
+    @Override
     public void createDatabase(Database targetDatabase, boolean dropTablesFirst, boolean continueOnError) {
         if (dropTablesFirst) {
             dropDatabase(targetDatabase, true);
@@ -216,24 +236,31 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         String delimiter = getDdlBuilder().getDatabaseInfo().getSqlCommandDelimiter();
         new SqlScript(createSql, getSqlTemplate(), !continueOnError, false, false,
                 getDatabaseInfo().isTriggersContainJava(), delimiter, null)
-                        .execute(getDatabaseInfo().isRequiresAutoCommitForDdl());
+                .execute(getDatabaseInfo().isRequiresAutoCommitForDdl());
     }
 
-    public void alterDatabase(Database desiredDatabase, boolean continueOnError, IAlterDatabaseInterceptor[] interceptors) {
-        alterTables(continueOnError, interceptors, desiredDatabase.getTables());
+    @Override
+    public void alterDatabase(Database desiredDatabase, String triggerPrefix, boolean continueOnError, IAlterDatabaseInterceptor[] interceptors) {
+        alterTables(continueOnError, false, triggerPrefix, interceptors, desiredDatabase.getTables());
     }
 
-    public void alterDatabase(Database desiredDatabase, boolean continueOnError) {
-        alterDatabase(desiredDatabase, continueOnError, null);
+    @Override
+    public void alterDatabase(Database desiredDatabase, String triggerPrefix, boolean continueOnError) {
+        alterDatabase(desiredDatabase, triggerPrefix, continueOnError, null);
     }
 
+    @Override
     public void alterTables(boolean continueOnError, Table... desiredTables) {
-        alterTables(continueOnError, null, desiredTables);
+        alterTables(continueOnError, false, null, null, desiredTables);
     }
 
-    public void alterTables(boolean continueOnError, IAlterDatabaseInterceptor[] interceptors, Table... desiredTables) {
+    @Override
+    public void alterTables(boolean continueOnError, boolean createTableIncludeApplicationTriggers, String triggerPrefix,
+            IAlterDatabaseInterceptor[] interceptors, Table... desiredTables) {
         Database currentDatabase = new Database();
+        currentDatabase.setName(getName());
         Database desiredDatabase = new Database();
+        desiredDatabase.setName(getName());
         StringBuilder tablesProcessed = new StringBuilder();
         for (Table table : desiredTables) {
             tablesProcessed.append(table.getFullyQualifiedTableName());
@@ -241,6 +268,12 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
             desiredDatabase.addTable(table);
             Table currentTable = ddlReader.readTable(table.getCatalog(), table.getSchema(), table.getName());
             if (currentTable != null) {
+                if (createTableIncludeApplicationTriggers) {
+                    List<Trigger> triggers = ddlReader.getApplicationTriggersForModel(table.getCatalog(), table.getSchema(), table.getName(), triggerPrefix);
+                    if (triggers != null && triggers.size() > 0) {
+                        currentTable.addTriggers(triggers);
+                    }
+                }
                 currentDatabase.addTable(currentTable);
             }
         }
@@ -249,15 +282,33 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         }
         String alterSql = ddlBuilder.alterDatabase(currentDatabase, desiredDatabase, interceptors);
         if (StringUtils.isNotBlank(alterSql.trim())) {
-            log.info("Running alter sql:\n{}", alterSql);
             String delimiter = getDdlBuilder().getDatabaseInfo().getSqlCommandDelimiter();
-            new SqlScript(alterSql, getSqlTemplate(), !continueOnError, false, false, delimiter, null)
+            Map<String, String> replacementTokens = new HashMap<String, String>();
+            replacementTokens.put(ddlBuilder.getTriggerDelimiterReplacementCharacters(), getDdlBuilder().getDatabaseInfo().getSqlCommandDelimiter());
+            log.info("Running alter sql:\n{}", getAlterSql(alterSql, createTableIncludeApplicationTriggers, replacementTokens, delimiter));
+            new SqlScript(alterSql, getSqlTemplate(), !continueOnError, false, false, delimiter, replacementTokens)
                     .execute(getDatabaseInfo().isRequiresAutoCommitForDdl());
         } else {
             log.info("Tables up to date.  No alters found for {}", tablesProcessed);
         }
     }
 
+    private String getAlterSql(String alterSql, boolean replaceTokens, Map<String, String> replacementTokens, String delimiter) {
+        if (replaceTokens) {
+            StringBuilder ddl = new StringBuilder();
+            SqlScriptReader reader = new SqlScriptReader(new StringReader(alterSql));
+            reader.setDelimiter(getDdlBuilder().getDatabaseInfo().getSqlCommandDelimiter());
+            reader.setReplacementTokens(replacementTokens);
+            for (String statement = reader.readSqlStatement(); statement != null; statement = reader.readSqlStatement()) {
+                ddl.append(statement).append(delimiter).append(System.lineSeparator());
+            }
+            return ddl.toString();
+        } else {
+            return alterSql;
+        }
+    }
+
+    @Override
     public Database readDatabase(String catalog, String schema, String[] tableTypes) {
         Database model = ddlReader.readTables(catalog, schema, tableTypes);
         if ((model.getName() == null) || (model.getName().length() == 0)) {
@@ -266,6 +317,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return model;
     }
 
+    @Override
     public Database readFromDatabase(Table... tables) {
         Database fromDb = new Database();
         for (Table tableFromXml : tables) {
@@ -278,6 +330,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return fromDb;
     }
 
+    @Override
     public Table readTableFromDatabase(String catalogName, String schemaName, String tableName) {
         try {
             return readTableFromDatabaseAllowException(catalogName, schemaName, tableName);
@@ -338,6 +391,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return table;
     }
 
+    @Override
     public Table readTableFromDatabase(ISqlTransaction transaction, String catalogName, String schemaName, String tableName) {
         String defaultedCatalogName = catalogName == null ? getDefaultCatalog() : catalogName;
         String defaultedSchemaName = schemaName == null ? getDefaultSchema() : schemaName;
@@ -353,15 +407,18 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return table;
     }
 
+    @Override
     public void resetCachedTableModel() {
         this.tableCache = Collections.synchronizedMap(new HashMap<String, Table>());
         lastTimeCachedModelClearedInMs = System.currentTimeMillis();
     }
 
+    @Override
     public Table getTableFromCache(String tableName, boolean forceReread) {
         return getTableFromCache(getDefaultCatalog(), getDefaultSchema(), tableName, forceReread);
     }
 
+    @Override
     public Table getTableFromCache(String catalogName, String schemaName, String tableName, boolean forceReread) {
         if (System.currentTimeMillis() - lastTimeCachedModelClearedInMs > clearCacheModelTimeoutInMs) {
             resetCachedTableModel();
@@ -383,21 +440,25 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return retTable;
     }
 
+    @Override
     public Object[] getObjectValues(BinaryEncoding encoding, Table table, String[] columnNames, String[] values) {
         Column[] metaData = Table.orderColumns(columnNames, table, false);
         return getObjectValues(encoding, values, metaData);
     }
 
+    @Override
     public Object[] getObjectValues(BinaryEncoding encoding, Table table, String[] columnNames, String[] values, boolean useVariableDates,
             boolean fitToColumn) {
         Column[] metaData = Table.orderColumns(columnNames, table, false);
         return getObjectValues(encoding, values, metaData, useVariableDates, fitToColumn);
     }
 
+    @Override
     public Object[] getObjectValues(BinaryEncoding encoding, String[] values, Column[] orderedMetaData) {
         return getObjectValues(encoding, values, orderedMetaData, false, false);
     }
 
+    @Override
     public Object[] getObjectValues(BinaryEncoding encoding, String[] values, Column[] orderedMetaData, boolean useVariableDates,
             boolean fitToColumn) {
         if (values != null) {
@@ -455,7 +516,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
             } else if (type == Types.NUMERIC || type == Types.DECIMAL || type == Types.DOUBLE || type == Types.REAL) {
                 objectValue = parseBigDecimal(value);
             } else if (type == Types.BOOLEAN) {
-                objectValue = value.equals("1") ? Boolean.TRUE : Boolean.FALSE;
+                objectValue = parseBoolean(value);
             } else if (!(column.getJdbcTypeName() != null && FormatUtils.upper(column.getJdbcTypeName()).contains(TypeMap.GEOMETRY))
                     && !(column.getJdbcTypeName() != null && FormatUtils.upper(column.getJdbcTypeName()).contains(TypeMap.GEOGRAPHY))
                     && (type == Types.BLOB || type == Types.LONGVARBINARY || type == Types.BINARY || type == Types.VARBINARY ||
@@ -522,6 +583,11 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         }
     }
 
+    protected Object parseBoolean(String value) {
+        value = cleanNumber(value);
+        return value.equals("1") ? Boolean.TRUE : Boolean.FALSE;
+    }
+
     protected String cleanNumber(String value) {
         value = value.trim();
         if (value.equalsIgnoreCase("true")) {
@@ -535,6 +601,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
 
     // TODO: this should be AbstractDdlBuilder.getInsertSql(Table table,
     // Map<String, Object> columnValues, boolean genPlaceholders)
+    @Override
     public String[] getStringValues(BinaryEncoding encoding, Column[] metaData, Row row, boolean useVariableDates, boolean indexByPosition) {
         String[] values = new String[metaData.length];
         Set<String> keys = row.keySet();
@@ -570,6 +637,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return values;
     }
 
+    @Override
     public String getCsvStringValue(BinaryEncoding encoding, Column[] metaData, Row row, boolean[] isColumnPositionUsingTemplate) {
         StringBuilder concatenatedRow = new StringBuilder();
         Set<String> names = row.keySet();
@@ -657,10 +725,12 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return row.getString(name);
     }
 
+    @Override
     public Map<String, String> getSqlScriptReplacementTokens() {
         return null;
     }
 
+    @Override
     public String scrubSql(String sql) {
         Map<String, String> replacementTokens = getSqlScriptReplacementTokens();
         if (replacementTokens != null) {
@@ -678,6 +748,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return text;
     }
 
+    @Override
     public java.util.Date parseDate(int type, String value, boolean useVariableDates) {
         if (StringUtils.isNotBlank(value)) {
             try {
@@ -751,6 +822,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return tableNameParts;
     }
 
+    @Override
     public Table makeAllColumnsPrimaryKeys(Table table) {
         Table result = table.copy();
         IIndex[] indices = result.getUniqueIndices();
@@ -765,7 +837,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
             }
         } else {
             for (Column column : result.getColumns()) {
-                if (!isLob(column.getMappedTypeCode()) && canColumnBeUsedInWhereClause(column)) {
+                if (!isLob(column) && canColumnBeUsedInWhereClause(column)) {
                     column.setPrimaryKey(true);
                 }
             }
@@ -774,40 +846,49 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return result;
     }
 
-    public boolean isLob(int type) {
-        return isClob(type) || isBlob(type);
+    @Override
+    public boolean isLob(Column column) {
+        return isClob(column) || isBlob(column);
     }
 
-    public boolean isClob(int type) {
+    @Override
+    public boolean isClob(Column column) {
+        int type = column.getMappedTypeCode();
         return type == Types.CLOB || type == Types.NCLOB || type == Types.LONGVARCHAR || type == ColumnTypes.LONGNVARCHAR;
     }
 
-    public boolean isBlob(int type) {
+    @Override
+    public boolean isBlob(Column column) {
+        int type = column.getMappedTypeCode();
         if (settings.isTreatBinaryAsLob()) {
             return type == Types.BLOB || type == Types.BINARY || type == Types.VARBINARY || type == Types.LONGVARBINARY || type == -10;
         }
         return type == Types.BLOB || type == Types.LONGVARBINARY || type == -10;
     }
 
+    @Override
     public List<Column> getLobColumns(Table table) {
         List<Column> lobColumns = new ArrayList<Column>(1);
         Column[] allColumns = table.getColumns();
         for (Column column : allColumns) {
-            if (isLob(column.getMappedTypeCode())) {
+            if (isLob(column)) {
                 lobColumns.add(column);
             }
         }
         return lobColumns;
     }
 
+    @Override
     public void setMetadataIgnoreCase(boolean metadataIgnoreCase) {
         this.metadataIgnoreCase = metadataIgnoreCase;
     }
 
+    @Override
     public boolean isMetadataIgnoreCase() {
         return metadataIgnoreCase;
     }
 
+    @Override
     public boolean isStoresLowerCaseIdentifiers() {
         if (storesLowerCaseIdentifiers == null) {
             storesLowerCaseIdentifiers = getSqlTemplate().isStoresLowerCaseIdentifiers();
@@ -815,6 +896,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return storesLowerCaseIdentifiers;
     }
 
+    @Override
     public boolean isStoresMixedCaseQuotedIdentifiers() {
         if (storesMixedCaseIdentifiers == null) {
             storesMixedCaseIdentifiers = getSqlTemplate().isStoresMixedCaseQuotedIdentifiers();
@@ -822,6 +904,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return storesMixedCaseIdentifiers;
     }
 
+    @Override
     public boolean isStoresUpperCaseIdentifiers() {
         if (storesUpperCaseIdentifiers == null) {
             storesUpperCaseIdentifiers = getSqlTemplate().isStoresUpperCaseIdentifiers();
@@ -829,6 +912,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return storesUpperCaseIdentifiers;
     }
 
+    @Override
     public Database readDatabaseFromXml(String filePath, boolean alterCaseToMatchDatabaseDefaultCase) {
         InputStream is = null;
         try {
@@ -857,6 +941,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         }
     }
 
+    @Override
     public void prefixDatabase(String prefix, Database targetTables) {
         try {
             if (StringUtils.isNotBlank(prefix) && !prefix.endsWith("_")) {
@@ -913,6 +998,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         }
     }
 
+    @Override
     public void alterCaseToMatchDatabaseDefaultCase(Database database) {
         Table[] tables = database.getTables();
         for (Table table : tables) {
@@ -920,6 +1006,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         }
     }
 
+    @Override
     public String[] alterCaseToMatchDatabaseDefaultCase(String[] values) {
         String[] newValues = new String[values.length];
         for (int i = 0; i < values.length; i++) {
@@ -928,6 +1015,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return newValues;
     }
 
+    @Override
     public String alterCaseToMatchDatabaseDefaultCase(String value) {
         if (StringUtils.isNotBlank(value)) {
             boolean storesUpperCase = isStoresUpperCaseIdentifiers();
@@ -938,12 +1026,14 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return value;
     }
 
+    @Override
     public void alterCaseToMatchDatabaseDefaultCase(Table... tables) {
         for (Table table : tables) {
             alterCaseToMatchDatabaseDefaultCase(table);
         }
     }
 
+    @Override
     public void alterCaseToMatchDatabaseDefaultCase(Table table) {
         table.setName(alterCaseToMatchDatabaseDefaultCase(table.getName()));
         Column[] columns = table.getColumns();
@@ -970,6 +1060,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         }
     }
 
+    @Override
     public Database readDatabaseFromXml(InputStream is, boolean alterCaseToMatchDatabaseDefaultCase) {
         InputStreamReader reader = new InputStreamReader(is);
         Database database = DatabaseXmlUtil.read(reader);
@@ -979,6 +1070,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return database;
     }
 
+    @Override
     public boolean canColumnBeUsedInWhereClause(Column column) {
         return column.getJdbcTypeCode() != Types.FLOAT &&
                 column.getJdbcTypeCode() != Types.DOUBLE &&
@@ -1084,6 +1176,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return matches;
     }
 
+    @Override
     public List<PermissionResult> checkSymTablePermissions(PermissionType... permissionTypes) {
         List<PermissionResult> results = new ArrayList<PermissionResult>();
         Database database = new Database();
@@ -1206,10 +1299,10 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         try {
             database.removeAllTablesExcept();
             database.addTable(alterTable);
-            alterDatabase(database, false);
+            alterDatabase(database, "sym", false);
             database.removeAllTablesExcept();
             database.addTable(table);
-            alterDatabase(database, false);
+            alterDatabase(database, "sym", false);
             result.setStatus(Status.PASS);
         } catch (SqlException e) {
             result.setException(e);
@@ -1255,12 +1348,14 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return result;
     }
 
+    @Override
     public PermissionResult getLogMinePermission() {
         PermissionResult result = new PermissionResult(PermissionType.LOG_MINE, "UNIMPLEMENTED");
         result.setStatus(Status.UNIMPLEMENTED);
         return result;
     }
 
+    @Override
     public boolean isUseMultiThreadSyncTriggers() {
         return useMultiThreadSyncTriggers;
     }
@@ -1286,6 +1381,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return true;
     }
 
+    @Override
     public long getEstimatedRowCount(Table table) {
         DatabaseInfo dbInfo = getDatabaseInfo();
         String quote = dbInfo.getDelimiterToken();
@@ -1295,6 +1391,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return getSqlTemplateDirty().queryForLong(sql);
     }
 
+    @Override
     public String getTruncateSql(Table table) {
         String sql = null;
         if (supportsTruncate) {
@@ -1308,6 +1405,7 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return sql;
     }
 
+    @Override
     public String getDeleteSql(Table table) {
         String sql = "delete from ";
         String quote = getDdlBuilder().isDelimitedIdentifierModeOn() ? getDatabaseInfo().getDelimiterToken() : "";
@@ -1315,43 +1413,63 @@ public abstract class AbstractDatabasePlatform implements IDatabasePlatform {
         return sql;
     }
 
+    @Override
     public List<Transaction> getTransactions() {
         return new ArrayList<Transaction>();
     }
 
+    @Override
     public boolean supportsLimitOffset() {
         return false;
     }
 
+    @Override
     public String massageForLimitOffset(String sql, int limit, int offset) {
         return sql;
     }
 
+    @Override
     public String massageForObjectAlreadyExists(String sql) {
         return sql;
     }
 
+    @Override
     public String massageForObjectDoesNotExist(String sql) {
         return sql;
     }
 
+    @Override
     public boolean supportsSliceTables() {
         return false;
     }
 
+    @Override
     public String getSliceTableSql(String columnName, int sliceNum, int totalSlices) {
         return "";
     }
 
+    @Override
     public String getCharSetName() {
         return "";
     }
 
+    @Override
     public boolean supportsParametersInSelect() {
         return true;
     }
 
+    @Override
     public boolean allowsUniqueIndexDuplicatesWithNulls() {
         return true;
+    }
+
+    @Override
+    public DatabaseVersion getDatabaseVersion() {
+        return databaseVersion;
+    }
+
+    @Override
+    public void setDatabaseVersion(DatabaseVersion databaseVersion) {
+        this.databaseVersion = databaseVersion;
     }
 }

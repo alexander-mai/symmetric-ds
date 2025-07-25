@@ -33,6 +33,7 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -49,6 +50,7 @@ import org.jumpmind.db.sql.DmlStatement;
 import org.jumpmind.db.sql.DmlStatement.DmlType;
 import org.jumpmind.db.sql.DmlStatementOptions;
 import org.jumpmind.db.sql.ISqlRowMapper;
+import org.jumpmind.db.sql.ISqlTemplate;
 import org.jumpmind.db.sql.Row;
 import org.jumpmind.db.util.BinaryEncoding;
 import org.jumpmind.exception.IoException;
@@ -85,7 +87,9 @@ public class DbExport {
     private int maxRows = Integer.MAX_VALUE;
     private boolean useQuotedIdentifiers = true;
     private boolean useJdbcTimestampFormat = true;
+    private boolean useReadUncommitted;
     private IDatabasePlatform platform;
+    private long rowCount;
 
     public DbExport(IDatabasePlatform platform) {
         this.platform = platform;
@@ -156,6 +160,7 @@ public class DbExport {
             tables[i] = tables[i].copy();
         }
         WriterWrapper writerWrapper = null;
+        rowCount = 0;
         try {
             writerWrapper = new WriterWrapper(output);
             tables = Database.sortByForeignKeys(tables);
@@ -196,10 +201,26 @@ public class DbExport {
         }
     }
 
+    private void removeMissingColumns(Table table, Row row) {
+        List<Column> columnsToRemove = new ArrayList<Column>();
+        Set<String> columnNamesFromRow = row.keySet();
+        for (Column column : table.getColumns()) {
+            if (columnNamesFromRow.stream().noneMatch(columnName -> StringUtils.equalsIgnoreCase(columnName, column.getName()))) {
+                columnsToRemove.add(column);
+            }
+        }
+        for (Column column : columnsToRemove) {
+            table.removeColumn(column);
+        }
+    }
+
     protected void writeTable(final WriterWrapper writerWrapper, Table table, String sql)
             throws IOException {
         removeExcludedColumns(table);
-        writerWrapper.startTable(table);
+        boolean startTableAfterQuery = sql != null && !noData;
+        if (!startTableAfterQuery) {
+            writerWrapper.startTable(table);
+        }
         if (!noData) {
             if (sql == null) {
                 if (excludeColumns == null || excludeColumns.length == 0) {
@@ -214,17 +235,28 @@ public class DbExport {
                 if (StringUtils.isNotBlank(whereClause)) {
                     sql = String.format("%s %s", sql, whereClause);
                 }
-                platform.getSqlTemplate().query(sql, new ISqlRowMapper<Object>() {
+                ISqlTemplate sqlTemplate = useReadUncommitted ? platform.getSqlTemplateDirty() : platform.getSqlTemplate();
+                sqlTemplate.query(sql, new ISqlRowMapper<Object>() {
                     int rows = maxRows;
 
+                    @Override
                     public Object mapRow(Row row) {
                         if (rows > 0) {
-                            writerWrapper.writeRow(row);
-                            rows--;
+                            if (startTableAfterQuery && rows == maxRows) {
+                                removeMissingColumns(table, row);
+                                writerWrapper.startTable(table);
+                            }
+                            if (table.getColumnCount() > 0) {
+                                writerWrapper.writeRow(row);
+                                rows--;
+                            }
                         }
                         return Boolean.TRUE;
                     }
                 });
+                if (startTableAfterQuery && !writerWrapper.startedWriting) {
+                    writerWrapper.startTable(table);
+                }
             }
         }
         writerWrapper.finishTable(table);
@@ -427,6 +459,18 @@ public class DbExport {
         return maxRows;
     }
 
+    public boolean isUseReadUncommitted() {
+        return useReadUncommitted;
+    }
+
+    public void setUseReadUncommitted(boolean useReadUncommitted) {
+        this.useReadUncommitted = useReadUncommitted;
+    }
+
+    public long getRowCount() {
+        return rowCount;
+    }
+
     protected String getDatabaseName() {
         Compatible mappedCompatible = compatible;
         if (mappedCompatible == Compatible.MSSQL) {
@@ -616,6 +660,7 @@ public class DbExport {
                     }
                     write("\t</row>\n");
                 }
+                rowCount++;
             } catch (IOException e) {
                 throw new IoException(e);
             }

@@ -55,6 +55,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class MultiBatchStagingWriter implements IDataWriter {
+    public static final String CONTEXT_IS_SINGLE_LOCAL_TARGET = "isSingleLocalTarget";
     protected final Logger log = LoggerFactory.getLogger(getClass());
     protected ISymmetricEngine engine;
     protected ExtractRequest request;
@@ -76,10 +77,11 @@ public class MultiBatchStagingWriter implements IDataWriter {
     protected Map<Long, OutgoingBatch> childBatches;
     protected long memoryThresholdInBytes;
     protected boolean isRestarted;
+    protected boolean isSingleLocalTarget;
     protected boolean synchronizeJobs;
 
     public MultiBatchStagingWriter(ISymmetricEngine engine, ExtractRequest request, List<ExtractRequest> childRequests, String sourceNodeId,
-            List<OutgoingBatch> batches, long maxBatchSize, ProcessInfo processInfo, boolean isRestarted) {
+            List<OutgoingBatch> batches, long maxBatchSize, ProcessInfo processInfo, boolean isRestarted, boolean isSingleLocalTarget) {
         this.engine = engine;
         this.stagingManager = engine.getStagingManager();
         this.request = request;
@@ -94,12 +96,14 @@ public class MultiBatchStagingWriter implements IDataWriter {
         this.memoryThresholdInBytes = engine.getParameterService().getLong(ParameterConstants.STREAM_TO_FILE_THRESHOLD);
         this.childBatches = new HashMap<Long, OutgoingBatch>();
         this.isRestarted = isRestarted;
+        this.isSingleLocalTarget = isSingleLocalTarget;
         this.synchronizeJobs = engine.getParameterService().is(ParameterConstants.SYNCHRONIZE_ALL_JOBS);
     }
 
     @Override
     public void open(DataContext context) {
         this.context = context;
+        context.put(CONTEXT_IS_SINGLE_LOCAL_TARGET, isSingleLocalTarget);
         nextBatch();
         currentDataWriter = buildWriter();
         currentDataWriter.open(context);
@@ -217,6 +221,10 @@ public class MultiBatchStagingWriter implements IDataWriter {
                 outgoingBatch.getNodeId());
         if (!batchFromDatabase.getStatus().equals(Status.OK) && !batchFromDatabase.getStatus().equals(Status.IG)) {
             outgoingBatch.setStatus(Status.NE);
+            if (outgoingBatch.getDataRowCount() == 0) {
+                outgoingBatch.setDataRowCount(batchFromDatabase.getDataRowCount());
+                outgoingBatch.setDataInsertRowCount(batchFromDatabase.getDataInsertRowCount());
+            }
             outgoingBatch.setExtractRowCount(outgoingBatch.getDataRowCount());
             outgoingBatch.setExtractInsertRowCount(outgoingBatch.getDataInsertRowCount());
             checkSendChildRequests(batchFromDatabase, resource, stats);
@@ -327,10 +335,12 @@ public class MultiBatchStagingWriter implements IDataWriter {
         /*
          * Update the last update time so the batch isn't purged prematurely
          */
-        for (OutgoingBatch batch : finishedBatches) {
-            IStagedResource resource = getStagedResource(batch);
-            if (resource != null) {
-                resource.refreshLastUpdateTime();
+        if (engine.getParameterService().is(ParameterConstants.STREAM_TO_FILE_PURGE_ON_TTL_ENABLED, false)) {
+            for (OutgoingBatch batch : finishedBatches) {
+                IStagedResource resource = getStagedResource(batch);
+                if (resource != null) {
+                    resource.refreshLastUpdateTime();
+                }
             }
         }
     }

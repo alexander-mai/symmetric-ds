@@ -21,6 +21,7 @@
 package org.jumpmind.db.platform.ase;
 
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.sql.Types;
 
 /*
@@ -111,10 +112,12 @@ public class AseDatabasePlatform extends AbstractJdbcDatabasePlatform {
         return new AseJdbcSqlTemplate(dataSource, settings, null, getDatabaseInfo());
     }
 
+    @Override
     public String getName() {
         return DatabaseNamesConstants.ASE;
     }
 
+    @Override
     public String getDefaultCatalog() {
         if (StringUtils.isBlank(defaultCatalog)) {
             defaultCatalog = getSqlTemplate().queryForObject("select DB_NAME()", String.class);
@@ -122,9 +125,10 @@ public class AseDatabasePlatform extends AbstractJdbcDatabasePlatform {
         return defaultCatalog;
     }
 
+    @Override
     public String getDefaultSchema() {
         if (StringUtils.isBlank(defaultSchema)) {
-            defaultSchema = (String) getSqlTemplate().queryForObject("select USER_NAME()", String.class);
+            defaultSchema = getSqlTemplate().queryForObject("select USER_NAME()", String.class);
         }
         return defaultSchema;
     }
@@ -136,7 +140,7 @@ public class AseDatabasePlatform extends AbstractJdbcDatabasePlatform {
 
     @Override
     public boolean canColumnBeUsedInWhereClause(Column column) {
-        return !isLob(column.getJdbcTypeCode()) && super.canColumnBeUsedInWhereClause(column);
+        return !isLob(column) && super.canColumnBeUsedInWhereClause(column);
     }
 
     @Override
@@ -167,10 +171,13 @@ public class AseDatabasePlatform extends AbstractJdbcDatabasePlatform {
             if (settings.isRightTrimCharValues()) {
                 stringValue = StringUtils.stripEnd(stringValue, null);
             }
-            if (fitToColumn && size > 0 && stringValue.length() > size) {
+            if (fitToColumn && size > 0 && stringValue != null && stringValue.length() > size) {
                 stringValue = stringValue.substring(0, size);
             }
             objectValue = stringValue;
+            if (stringValue != null && typeName.equalsIgnoreCase("unitext")) {
+                objectValue = stringValue.getBytes(StandardCharsets.UTF_16LE);
+            }
             return objectValue;
         } else {
             return super.getObjectValue(value, column, encoding, useVariableDates, fitToColumn);

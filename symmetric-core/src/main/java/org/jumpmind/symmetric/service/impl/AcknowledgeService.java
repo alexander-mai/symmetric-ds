@@ -36,8 +36,11 @@ import org.jumpmind.symmetric.model.AbstractBatch.Status;
 import org.jumpmind.symmetric.model.BatchAck;
 import org.jumpmind.symmetric.model.BatchAckResult;
 import org.jumpmind.symmetric.model.Channel;
+import org.jumpmind.symmetric.model.Node;
 import org.jumpmind.symmetric.model.OutgoingBatch;
 import org.jumpmind.symmetric.model.OutgoingBatches;
+import org.jumpmind.symmetric.model.RegistrationRequest;
+import org.jumpmind.symmetric.model.RegistrationRequest.RegistrationStatus;
 import org.jumpmind.symmetric.service.IAcknowledgeService;
 import org.jumpmind.symmetric.service.IOutgoingBatchService;
 import org.jumpmind.symmetric.service.IRegistrationService;
@@ -66,6 +69,18 @@ public class AcknowledgeService extends AbstractService implements IAcknowledgeS
         if (batch.getBatchId() == Constants.VIRTUAL_BATCH_FOR_REGISTRATION) {
             if (batch.isOk()) {
                 registrationService.markNodeAsRegistered(batch.getNodeId());
+            } else if (batch.getSqlCode() != 0 || batch.getSqlMessage() != null) {
+                Node requestingNode = engine.getNodeService().findNode(batch.getNodeId());
+                if (requestingNode != null) {
+                    RegistrationRequest request = registrationService.getLatestRegistrationRequest(
+                            requestingNode.getNodeGroupId(), requestingNode.getExternalId());
+                    if (request != null) {
+                        request.setStatus(RegistrationStatus.ER);
+                        request.setErrorMessage(getErrorMessage(batch));
+                        request.setAttemptCount(request.getAttemptCount() + 1);
+                        registrationService.updateRegistrationRequest(request);
+                    }
+                }
             }
         } else if (batch.getBatchId() != Constants.BATCH_ID_MISSING) {
             OutgoingBatch outgoingBatch = outgoingBatchService.findOutgoingBatch(batch.getBatchId(), batch.getNodeId());
@@ -140,6 +155,7 @@ public class AcknowledgeService extends AbstractService implements IAcknowledgeS
                             try {
                                 engine.getDataService().reloadMissingForeignKeyRows(outgoingBatch.getBatchId(), outgoingBatch.getNodeId(),
                                         outgoingBatch.getFailedDataId(), outgoingBatch.getFailedLineNumber());
+                                suppressError = true;
                             } catch (Exception e) {
                                 log.error("Failed to request a reload of missing foreign key rows for batch " + outgoingBatch.getNodeBatchId() +
                                         " data ID " + outgoingBatch.getFailedDataId(), e);
@@ -173,10 +189,10 @@ public class AcknowledgeService extends AbstractService implements IAcknowledgeS
                     }
                     if (suppressError) {
                         outgoingBatch.setErrorFlag(false);
+                        outgoingBatch.setStatus(Status.LD);
                     } else {
-                        log.error("The outgoing batch {} failed: {}{}", outgoingBatch.getNodeBatchId(),
-                                (batch.getSqlCode() != 0 ? "[" + batch.getSqlState() + "," + batch.getSqlCode() + "] " : ""),
-                                (batch.getSqlMessage() != null ? batch.getSqlMessage() : "(no message)"));
+                        log.error("The outgoing batch {} failed at line {} on data {}: {}", outgoingBatch.getNodeBatchId(), outgoingBatch.getFailedLineNumber(),
+                                outgoingBatch.getFailedDataId(), getErrorMessage(batch));
                         RouterStats routerStats = engine.getStatisticManager().getRouterStatsByBatch(batch.getBatchId());
                         if (routerStats != null) {
                             log.info("Router stats for batch " + outgoingBatch.getBatchId() + ": " + routerStats);
@@ -236,6 +252,11 @@ public class AcknowledgeService extends AbstractService implements IAcknowledgeS
             }
         }
         return result;
+    }
+
+    protected String getErrorMessage(BatchAck batch) {
+        return (batch.getSqlCode() != 0 ? "[" + batch.getSqlState() + "," + batch.getSqlCode() + "] " : "")
+                + (batch.getSqlMessage() != null ? batch.getSqlMessage() : "(no message)");
     }
 
     protected void purgeBatchesFromStaging(OutgoingBatch outgoingBatch) {

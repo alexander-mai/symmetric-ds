@@ -26,6 +26,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.stream.Collectors;
 
 import org.apache.commons.collections4.CollectionUtils;
@@ -54,6 +55,7 @@ import org.jumpmind.symmetric.io.data.transform.IsBlankTransform;
 import org.jumpmind.symmetric.io.data.transform.IsEmptyTransform;
 import org.jumpmind.symmetric.io.data.transform.IsNullTransform;
 import org.jumpmind.symmetric.io.data.transform.JavaColumnTransform;
+import org.jumpmind.symmetric.io.data.transform.JsonColumnTransform;
 import org.jumpmind.symmetric.io.data.transform.LeftColumnTransform;
 import org.jumpmind.symmetric.io.data.transform.LookupColumnTransform;
 import org.jumpmind.symmetric.io.data.transform.MathColumnTransform;
@@ -90,11 +92,40 @@ public class TransformService extends AbstractService implements ITransformServi
             "if (filter != null) return filter.%s(currentValue); else return currentValue;"
             + "} else { return currentValue; }"
             + "}";
+    public static final Map<String, IColumnTransform<?>> columnTransformMap = new HashMap<String, IColumnTransform<?>>();
     private IConfigurationService configurationService;
     private IExtensionService extensionService;
     private IParameterService parameterService;
     private Date lastUpdateTime;
     private ICacheManager cacheManager;
+    static {
+        columnTransformMap.put(ParameterColumnTransform.NAME, new ParameterColumnTransform());
+        columnTransformMap.put(VariableColumnTransform.NAME, new VariableColumnTransform());
+        columnTransformMap.put(LookupColumnTransform.NAME, new LookupColumnTransform());
+        columnTransformMap.put(BshColumnTransform.NAME, new BshColumnTransform());
+        columnTransformMap.put(AdditiveColumnTransform.NAME, new AdditiveColumnTransform());
+        columnTransformMap.put(JavaColumnTransform.NAME, new JavaColumnTransform());
+        columnTransformMap.put(ConstantColumnTransform.NAME, new ConstantColumnTransform());
+        columnTransformMap.put(CopyColumnTransform.NAME, new CopyColumnTransform());
+        columnTransformMap.put(IdentityColumnTransform.NAME, new IdentityColumnTransform());
+        columnTransformMap.put(MultiplierColumnTransform.NAME, new MultiplierColumnTransform());
+        columnTransformMap.put(SubstrColumnTransform.NAME, new SubstrColumnTransform());
+        columnTransformMap.put(LeftColumnTransform.NAME, new LeftColumnTransform());
+        columnTransformMap.put(TrimColumnTransform.NAME, new TrimColumnTransform());
+        columnTransformMap.put(BinaryLeftColumnTransform.NAME, new BinaryLeftColumnTransform());
+        columnTransformMap.put(RemoveColumnTransform.NAME, new RemoveColumnTransform());
+        columnTransformMap.put(MathColumnTransform.NAME, new MathColumnTransform());
+        columnTransformMap.put(ValueMapColumnTransform.NAME, new ValueMapColumnTransform());
+        columnTransformMap.put(CopyIfChangedColumnTransform.NAME, new CopyIfChangedColumnTransform());
+        columnTransformMap.put(ColumnsToRowsKeyColumnTransform.NAME, new ColumnsToRowsKeyColumnTransform());
+        columnTransformMap.put(ColumnsToRowsValueColumnTransform.NAME, new ColumnsToRowsValueColumnTransform());
+        columnTransformMap.put(ClarionDateTimeColumnTransform.NAME, new ClarionDateTimeColumnTransform());
+        columnTransformMap.put(IsEmptyTransform.NAME, new IsEmptyTransform());
+        columnTransformMap.put(IsNullTransform.NAME, new IsNullTransform());
+        columnTransformMap.put(IsBlankTransform.NAME, new IsBlankTransform());
+        columnTransformMap.put(DeletedColumnListColumnTransform.NAME, new DeletedColumnListColumnTransform());
+        columnTransformMap.put(JsonColumnTransform.NAME, new JsonColumnTransform());
+    }
 
     public TransformService(ISymmetricEngine engine, ISymmetricDialect symmetricDialect) {
         super(engine.getParameterService(), symmetricDialect);
@@ -102,31 +133,17 @@ public class TransformService extends AbstractService implements ITransformServi
         this.configurationService = engine.getConfigurationService();
         this.extensionService = engine.getExtensionService();
         this.parameterService = engine.getParameterService();
-        addColumnTransform(ParameterColumnTransform.NAME, new ParameterColumnTransform(parameterService));
-        addColumnTransform(VariableColumnTransform.NAME, new VariableColumnTransform());
-        addColumnTransform(LookupColumnTransform.NAME, new LookupColumnTransform());
-        addColumnTransform(BshColumnTransform.NAME, new BshColumnTransform(parameterService));
-        addColumnTransform(AdditiveColumnTransform.NAME, new AdditiveColumnTransform());
-        addColumnTransform(JavaColumnTransform.NAME, new JavaColumnTransform(extensionService));
-        addColumnTransform(ConstantColumnTransform.NAME, new ConstantColumnTransform());
-        addColumnTransform(CopyColumnTransform.NAME, new CopyColumnTransform());
-        addColumnTransform(IdentityColumnTransform.NAME, new IdentityColumnTransform());
-        addColumnTransform(MultiplierColumnTransform.NAME, new MultiplierColumnTransform());
-        addColumnTransform(SubstrColumnTransform.NAME, new SubstrColumnTransform());
-        addColumnTransform(LeftColumnTransform.NAME, new LeftColumnTransform());
-        addColumnTransform(TrimColumnTransform.NAME, new TrimColumnTransform());
-        addColumnTransform(BinaryLeftColumnTransform.NAME, new BinaryLeftColumnTransform());
-        addColumnTransform(RemoveColumnTransform.NAME, new RemoveColumnTransform());
-        addColumnTransform(MathColumnTransform.NAME, new MathColumnTransform());
-        addColumnTransform(ValueMapColumnTransform.NAME, new ValueMapColumnTransform());
-        addColumnTransform(CopyIfChangedColumnTransform.NAME, new CopyIfChangedColumnTransform());
-        addColumnTransform(ColumnsToRowsKeyColumnTransform.NAME, new ColumnsToRowsKeyColumnTransform());
-        addColumnTransform(ColumnsToRowsValueColumnTransform.NAME, new ColumnsToRowsValueColumnTransform());
-        addColumnTransform(ClarionDateTimeColumnTransform.NAME, new ClarionDateTimeColumnTransform());
-        addColumnTransform(IsEmptyTransform.NAME, new IsEmptyTransform());
-        addColumnTransform(IsNullTransform.NAME, new IsNullTransform());
-        addColumnTransform(IsBlankTransform.NAME, new IsBlankTransform());
-        addColumnTransform(DeletedColumnListColumnTransform.NAME, new DeletedColumnListColumnTransform());
+        for (Entry<String, IColumnTransform<?>> columnTransformEntry : columnTransformMap.entrySet()) {
+            IColumnTransform<?> columnTransform = columnTransformEntry.getValue();
+            if (columnTransform instanceof ParameterColumnTransform parameterColumnTransform) {
+                parameterColumnTransform.setParameterService(parameterService);
+            } else if (columnTransform instanceof BshColumnTransform bshColumnTransform) {
+                bshColumnTransform.setParameterService(parameterService);
+            } else if (columnTransform instanceof JavaColumnTransform javaColumnTransform) {
+                javaColumnTransform.setExtensionService(extensionService);
+            }
+            addColumnTransform(columnTransformEntry.getKey(), columnTransform);
+        }
         setSqlMap(new TransformServiceSqlMap(symmetricDialect.getPlatform(),
                 createSqlReplacementTokens()));
     }
@@ -265,13 +282,26 @@ public class TransformService extends AbstractService implements ITransformServi
 
     public List<TransformTableNodeGroupLink> getConfigExtractTransforms(NodeGroupLink nodeGroupLink) {
         List<TransformTableNodeGroupLink> transforms = new ArrayList<TransformTableNodeGroupLink>();
+        TransformColumn column = new TransformColumn("heartbeat_time", "heartbeat_time", false);
+        column.setTransformType("variable");
+        column.setTransformExpression("system_timestamp");
+        String tableName = TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_NODE_HOST);
+        TransformTableNodeGroupLink transform = new TransformTableNodeGroupLink();
+        transform.setSourceTableName(tableName);
+        transform.setTargetTableName(tableName);
+        transform.setTransformPoint(TransformPoint.EXTRACT);
+        transform.addTransformColumn(new TransformColumn("node_id", "node_id", true));
+        transform.addTransformColumn(new TransformColumn("host_name", "host_name", true));
+        transform.addTransformColumn(column);
+        transform.setNodeGroupLink(nodeGroupLink);
+        transforms.add(transform);
         if (extensionService.getExtensionPoint(INodePasswordFilter.class) != null) {
-            String tableName = TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_NODE_SECURITY);
-            TransformTableNodeGroupLink transform = new TransformTableNodeGroupLink();
+            tableName = TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_NODE_SECURITY);
+            transform = new TransformTableNodeGroupLink();
             transform.setSourceTableName(tableName);
             transform.setTargetTableName(tableName);
             transform.setTransformPoint(TransformPoint.EXTRACT);
-            TransformColumn column = new TransformColumn("node_password", "node_password", false);
+            column = new TransformColumn("node_password", "node_password", false);
             column.setTransformType("bsh");
             column.setTransformExpression(String.format(NODE_FILTER_BSH, "onNodeSecurityRender"));
             transform.addTransformColumn(column);
@@ -279,12 +309,12 @@ public class TransformService extends AbstractService implements ITransformServi
             transforms.add(transform);
         }
         if (extensionService.getExtensionPoint(ISmtpPasswordFilter.class) != null) {
-            String tableName = TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_PARAMETER);
-            TransformTableNodeGroupLink transform = new TransformTableNodeGroupLink();
+            tableName = TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_PARAMETER);
+            transform = new TransformTableNodeGroupLink();
             transform.setSourceTableName(tableName);
             transform.setTargetTableName(tableName);
             transform.setTransformPoint(TransformPoint.EXTRACT);
-            TransformColumn column = new TransformColumn("param_value", "param_value", false);
+            column = new TransformColumn("param_value", "param_value", false);
             column.setTransformType("bsh");
             column.setTransformExpression(String.format(SMTP_PASSWORD_BSH, "onSmtpPasswordRender"));
             transform.addTransformColumn(column);
@@ -296,24 +326,13 @@ public class TransformService extends AbstractService implements ITransformServi
 
     public List<TransformTableNodeGroupLink> getConfigLoadTransforms(NodeGroupLink nodeGroupLink) {
         List<TransformTableNodeGroupLink> transforms = new ArrayList<TransformTableNodeGroupLink>();
-        TransformColumn column = new TransformColumn("heartbeat_time", "heartbeat_time", false);
-        column.setTransformType("variable");
-        column.setTransformExpression("system_timestamp");
-        String tableName = TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_NODE_HOST);
-        TransformTableNodeGroupLink transform = new TransformTableNodeGroupLink();
-        transform.setSourceTableName(tableName);
-        transform.setTargetTableName(tableName);
-        transform.setTransformPoint(TransformPoint.EXTRACT);
-        transform.addTransformColumn(column);
-        transform.setNodeGroupLink(nodeGroupLink);
-        transforms.add(transform);
         if (extensionService.getExtensionPoint(INodePasswordFilter.class) != null) {
-            tableName = TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_NODE_SECURITY);
-            transform = new TransformTableNodeGroupLink();
+            String tableName = TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_NODE_SECURITY);
+            TransformTableNodeGroupLink transform = new TransformTableNodeGroupLink();
             transform.setSourceTableName(tableName);
             transform.setTargetTableName(tableName);
             transform.setTransformPoint(TransformPoint.LOAD);
-            column = new TransformColumn("node_password", "node_password", false);
+            TransformColumn column = new TransformColumn("node_password", "node_password", false);
             column.setTransformType("bsh");
             column.setTransformExpression(String.format(NODE_FILTER_BSH, "onNodeSecuritySave"));
             transform.addTransformColumn(column);
@@ -321,12 +340,12 @@ public class TransformService extends AbstractService implements ITransformServi
             transforms.add(transform);
         }
         if (extensionService.getExtensionPoint(ISmtpPasswordFilter.class) != null) {
-            tableName = TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_PARAMETER);
-            transform = new TransformTableNodeGroupLink();
+            String tableName = TableConstants.getTableName(parameterService.getTablePrefix(), TableConstants.SYM_PARAMETER);
+            TransformTableNodeGroupLink transform = new TransformTableNodeGroupLink();
             transform.setSourceTableName(tableName);
             transform.setTargetTableName(tableName);
             transform.setTransformPoint(TransformPoint.LOAD);
-            column = new TransformColumn("param_value", "param_value", false);
+            TransformColumn column = new TransformColumn("param_value", "param_value", false);
             column.setTransformType("bsh");
             column.setTransformExpression(String.format(SMTP_PASSWORD_BSH, "onSmtpPasswordSave"));
             transform.addTransformColumn(column);

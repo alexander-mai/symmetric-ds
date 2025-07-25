@@ -99,6 +99,7 @@ import org.jumpmind.symmetric.transport.http.HttpConnection;
 import org.jumpmind.symmetric.util.ModuleException;
 import org.jumpmind.symmetric.util.ModuleManager;
 import org.jumpmind.symmetric.util.PropertiesUtil;
+import org.jumpmind.symmetric.util.SymmetricUtils;
 import org.jumpmind.util.AppUtils;
 import org.jumpmind.util.FormatUtils;
 import org.jumpmind.util.JarBuilder;
@@ -460,12 +461,38 @@ public class SymmetricAdmin extends AbstractCommandLauncher {
         return args.remove(0);
     }
 
+    @Override
+    protected String scrubCommandLine(String[] cmdArgs) {
+        boolean scrubNextArg = false;
+        for (int i = 0; i < cmdArgs.length; i++) {
+            String arg = cmdArgs[i];
+            if (scrubNextArg) {
+                cmdArgs[i] = "***";
+                scrubNextArg = false;
+            } else if (arg != null && (arg.equals(CMD_ENCRYPT_TEXT) || arg.equals(CMD_OBFUSCATE_TEXT) || arg.equals(CMD_UNOBFUSCATE_TEXT))) {
+                scrubNextArg = true;
+            }
+        }
+        return super.scrubCommandLine(cmdArgs);
+    }
+
     private void importConfig(CommandLine line, List<String> args) {
         String fileName = popArg(args, "file name");
+        boolean isCsv = fileName.toLowerCase().endsWith(".csv");
+        boolean isSql = fileName.toLowerCase().endsWith(".sql");
+        if (!isCsv && !isSql) {
+            System.err.println("ERROR: Expected a .csv or .sql file.");
+            System.exit(1);
+        }
         try {
             File configFile = new File(fileName);
-            if (fileName.toLowerCase().endsWith(".csv")) {
+            if (isCsv) {
                 String content = FileUtils.readFileToString(configFile, Charset.defaultCharset());
+                if (!SymmetricUtils.importContainsCurrentGroup(getSymmetricEngine(), content, true)) {
+                    System.err.println(String.format("ERROR: Imported .csv file doesn't contain current node group (%s)",
+                            engine.getParameterService().getNodeGroupId()));
+                    System.exit(1);
+                }
                 IDataLoaderService service = getSymmetricEngine().getDataLoaderService();
                 List<IncomingBatch> batches = service.loadDataBatch(content);
                 for (IncomingBatch batch : batches) {
@@ -474,13 +501,15 @@ public class SymmetricAdmin extends AbstractCommandLauncher {
                         System.exit(1);
                     }
                 }
-            } else if (fileName.toLowerCase().endsWith(".sql")) {
+            } else {
                 URL url = configFile.toURI().toURL();
+                if (!SymmetricUtils.importContainsCurrentGroup(getSymmetricEngine(), url, false)) {
+                    System.err.println(String.format("ERROR: Imported .sql file doesn't contain current node group (%s)",
+                            engine.getParameterService().getNodeGroupId()));
+                    System.exit(1);
+                }
                 SqlScript script = new SqlScript(url, getSymmetricEngine().getDatabasePlatform().getSqlTemplate());
                 script.execute();
-            } else {
-                System.err.println("ERROR: Expected a .csv or .sql file.");
-                System.exit(1);
             }
         } catch (Exception e) {
             throw new RuntimeException(e);
@@ -759,7 +788,10 @@ public class SymmetricAdmin extends AbstractCommandLauncher {
         String warFileName = popArg(args, "Filename");
         final File workingDirectory = new File(AppUtils.getSymHome() + "/.war");
         FileUtils.deleteDirectory(workingDirectory);
-        FileUtils.copyDirectory(new File(AppUtils.getSymHome() + "/web"), workingDirectory);
+        for (File file : FileUtils.listFiles(new File(AppUtils.getSymHome() + "/web/WEB-INF/lib"), FileFilterUtils.notFileFilter(
+                FileFilterUtils.or(FileFilterUtils.prefixFileFilter("jetty-"), FileFilterUtils.prefixFileFilter("websocket-"))), null)) {
+            FileUtils.copyToDirectory(file, new File(workingDirectory, "WEB-INF/lib"));
+        }
         File instanceIdFile = new File(AppUtils.getSymHome() + "/conf/instance.uuid");
         if (instanceIdFile.canRead()) {
             FileUtils.copyToDirectory(instanceIdFile, new File(workingDirectory, "WEB-INF/classes"));
@@ -774,7 +806,10 @@ public class SymmetricAdmin extends AbstractCommandLauncher {
             System.out.println("Copying security files");
             FileUtils.copyToDirectory(new File(AppUtils.getSymHome() + "/security/keystore"), new File(workingDirectory, "WEB-INF/classes"));
             FileUtils.copyToDirectory(new File(AppUtils.getSymHome() + "/security/cacerts"), new File(workingDirectory, "WEB-INF/classes"));
-            FileUtils.copyToDirectory(new File(AppUtils.getSymHome() + "/security/rest.properties"), new File(workingDirectory, "WEB-INF/classes"));
+            File restPropFile = new File(AppUtils.getSymHome() + "/security/rest.properties");
+            if (restPropFile.exists()) {
+                FileUtils.copyToDirectory(restPropFile, new File(workingDirectory, "WEB-INF/classes"));
+            }
         }
         if (!line.hasOption(OPTION_EXCLUDE_LOG4J)) {
             System.out.println("Copying log4j files");
@@ -1165,7 +1200,7 @@ public class SymmetricAdmin extends AbstractCommandLauncher {
                     new TypedProperties(System.getProperties()));
             TrustedCertificateEntry entry = bouncyCastleSecurityService.createTrustedCert(certData, "pem", alias, password);
             if (acceptAll) {
-                getSymmetricEngine().getSecurityService().installTrustedCert((TrustedCertificateEntry) entry);
+                getSymmetricEngine().getSecurityService().installTrustedCert(entry);
             } else {
                 Certificate trustedCertificate = entry.getTrustedCertificate();
                 String subject = "";
@@ -1204,7 +1239,7 @@ public class SymmetricAdmin extends AbstractCommandLauncher {
                     while (true) {
                         String answer = System.console().readLine("Accept this certificate? (Y/N): ");
                         if ("Y".equalsIgnoreCase(answer) || "YES".equalsIgnoreCase(answer)) {
-                            getSymmetricEngine().getSecurityService().installTrustedCert((TrustedCertificateEntry) entry);
+                            getSymmetricEngine().getSecurityService().installTrustedCert(entry);
                             break;
                         } else if ("N".equalsIgnoreCase(answer) || "NO".equalsIgnoreCase(answer)) {
                             break;

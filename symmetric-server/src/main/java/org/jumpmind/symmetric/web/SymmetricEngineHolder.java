@@ -25,6 +25,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -218,7 +219,7 @@ public class SymmetricEngineHolder {
                 properties.setProperty(ParameterConstants.LOAD_ONLY_PROPERTY_PREFIX + BasicDataSourcePropertyConstants.DB_POOL_PASSWORD,
                         SecurityConstants.PREFIX_ENC + service.encrypt(loadOnlyPassword));
             } catch (Exception ex) {
-                log.warn("Could not encrypt load only password", ex);
+                log.warn("Could not encrypt load-only password", ex);
             }
         }
         String engineName = validateRequiredProperties(properties);
@@ -245,7 +246,7 @@ public class SymmetricEngineHolder {
         try {
             String registrationUrl = properties.getProperty(ParameterConstants.REGISTRATION_URL);
             if (StringUtils.isNotBlank(registrationUrl)) {
-                Collection<ServerSymmetricEngine> all = getEngines().values();
+                Collection<ServerSymmetricEngine> all = new ArrayList<ServerSymmetricEngine>(getEngines().values());
                 for (ISymmetricEngine currentEngine : all) {
                     if (currentEngine.getParameterService().getSyncUrl().equals(registrationUrl)) {
                         String serverNodeGroupId = currentEngine.getParameterService().getNodeGroupId();
@@ -320,7 +321,7 @@ public class SymmetricEngineHolder {
     public void uninstallEngine(ISymmetricEngine engine) {
         Node node = engine.getNodeService().getCachedIdentity();
         String engineName = engine.getEngineName();
-        File file = PropertiesUtil.findPropertiesFileForEngineWithName(engineName);
+        File file = PropertiesUtil.findPropertiesFileForEngineWithName(engineName, engine.getParameterService().getReplacementValues());
         engine.uninstall();
         engine.destroy();
         if (file != null) {
@@ -495,7 +496,7 @@ public class SymmetricEngineHolder {
     }
 
     public int getEngineCount() {
-        return engines.size() + enginesFailed.size();
+        return engines.size();
     }
 
     public Set<SymmetricEngineStarter> getEnginesStarting() {

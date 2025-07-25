@@ -25,6 +25,7 @@ package org.jumpmind.symmetric.web;
  */
 public class WebConstants {
     public static final String HEADER_ACCEPT_CHARSET = "Accept-Charset";
+    public static final String HEADER_READY_QUEUES = "Ready-Queues";
     public static final String METHOD_GET = "GET";
     public static final String METHOD_POST = "POST";
     public static final String METHOD_PUT = "PUT";
@@ -107,6 +108,22 @@ public class WebConstants {
     public static final String REG_PASSWORD = "regPassword";
     public static final String PUSH_REGISTRATION = "pushRegistration";
     public static final String API_KEY_HEADER = "X-REST-API-KEY";
+    public static final String DIRECTION = "direction";
+    public static final String SAMPLE_SIZE = "sampleSize";
+    public static final String HEADER_DIRECTION = "Direction";
+    public static final String HEADER_SAMPLE_SIZE = "Sample-Size";
+    public static final String URL_PUSH = "push";
+    public static final String URL_PULL = "pull";
+    public static final String URL_PING = "ping";
+    public static final String URL_REGISTRATION = "registration";
+    public static final String URL_COPY = "copy";
+    public static final String URL_CONFIG = "config";
+    public static final String URL_PUSHSTATUS = "pushstatus";
+    public static final String URL_BANDWIDTH = "bandwidth";
+    public static final String URL_FILESYNC_PUSH = "filesync/push";
+    public static final String URL_FILESYNC_PULL = "filesync/pull";
+    public static final String URL_COMPARE_PUSH = "compare/push";
+    public static final String URL_COMPARE_PULL = "compare/pull";
 
     public static String getHttpMessage(int httpCode) {
         String httpMessage = null;

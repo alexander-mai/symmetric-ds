@@ -56,12 +56,12 @@ import org.slf4j.LoggerFactory;
 abstract public class AbstractTriggerTemplate {
     protected final Logger log = LoggerFactory.getLogger(getClass());
     protected static final String ORIG_TABLE_ALIAS = "orig";
-    static final String INSERT_TRIGGER_TEMPLATE = "insertTriggerTemplate";
-    static final String UPDATE_TRIGGER_TEMPLATE = "updateTriggerTemplate";
-    static final String INSERT_WITH_RELOAD_TRIGGER_TEMPLATE = "insertReloadTriggerTemplate";
-    static final String UPDATE_WITH_RELOAD_TRIGGER_TEMPLATE = "updateReloadTriggerTemplate";
-    static final String DELETE_TRIGGER_TEMPLATE = "deleteTriggerTemplate";
-    static final String INITIAL_LOAD_SQL_TEMPLATE = "initialLoadSqlTemplate";
+    protected static final String INSERT_TRIGGER_TEMPLATE = "insertTriggerTemplate";
+    protected static final String UPDATE_TRIGGER_TEMPLATE = "updateTriggerTemplate";
+    protected static final String INSERT_WITH_RELOAD_TRIGGER_TEMPLATE = "insertReloadTriggerTemplate";
+    protected static final String UPDATE_WITH_RELOAD_TRIGGER_TEMPLATE = "updateReloadTriggerTemplate";
+    protected static final String DELETE_TRIGGER_TEMPLATE = "deleteTriggerTemplate";
+    protected static final String INITIAL_LOAD_SQL_TEMPLATE = "initialLoadSqlTemplate";
     protected Map<String, String> sqlTemplates;
     protected String emptyColumnTemplate = "''";
     protected String stringColumnTemplate;
@@ -126,7 +126,7 @@ abstract public class AbstractTriggerTemplate {
                     || type == Types.TINYINT || type == Types.SMALLINT || type == Types.INTEGER || type == Types.BIGINT
                     || type == Types.NUMERIC || type == Types.BINARY || type == Types.VARBINARY
                     || (type == Types.BLOB && !requiresWrappedBlobTemplateForBlobType()) || type == Types.LONGVARBINARY
-                    || type == Types.DECIMAL || type == Types.FLOAT || type == Types.DOUBLE || type == Types.REAL
+                    || type == Types.DECIMAL || type == Types.FLOAT || (type == Types.DOUBLE && !typeName.equalsIgnoreCase("money")) || type == Types.REAL
                     || type == ColumnTypes.MSSQL_NTEXT || type == Types.DATE || type == Types.TIME || type == Types.TIMESTAMP
                     || type == Types.BIT || type == Types.BOOLEAN) {
                 return false;
@@ -786,11 +786,18 @@ abstract public class AbstractTriggerTemplate {
         return false;
     }
 
+    /***
+     * Helps detect Large Object columns. Some LOBs are inaccessible to triggers or require specialized code.
+     */
+    protected boolean isLob(Column column) {
+        return symmetricDialect.getPlatform().isLob(column);
+    }
+
     protected String buildColumnNameString(String tableAlias, boolean quote, Trigger trigger,
             Column[] columns) {
         StringBuilder columnsText = new StringBuilder();
         for (Column column : columns) {
-            boolean isLob = symmetricDialect.getPlatform().isLob(column.getMappedTypeCode());
+            boolean isLob = this.isLob(column);
             String columnName = column.getName();
             if (quote) {
                 columnName = SymmetricUtils.quote(symmetricDialect, columnName);
@@ -837,7 +844,7 @@ abstract public class AbstractTriggerTemplate {
     protected ColumnString fillOutColumnTemplate(String origTableAlias, String tableAlias,
             String columnPrefix, Table table, Column column, DataEventType dml, boolean isOld, Channel channel,
             Trigger trigger, boolean ignoreStreamLobs) {
-        boolean isLob = symmetricDialect.getPlatform().isLob(column.getMappedTypeCode());
+        boolean isLob = this.isLob(column);
         String templateToUse = null;
         if (column.getJdbcTypeName() != null
                 && (column.getJdbcTypeName().toUpperCase().contains(TypeMap.GEOMETRY))
@@ -883,6 +890,7 @@ abstract public class AbstractTriggerTemplate {
                         break;
                     } else if (!isLob) {
                         templateToUse = stringColumnTemplate;
+                        templateToUse = FormatUtils.replace("columnSizeOrMax", "max", templateToUse);
                         break;
                     }
                 case Types.CLOB:
@@ -979,7 +987,7 @@ abstract public class AbstractTriggerTemplate {
             templateToUse = adjustColumnTemplate(templateToUse, column.getMappedTypeCode());
             templateToUse = templateToUse.trim();
         } else {
-            throw new NotImplementedException("Table " + table + " column " + column);
+            throw new NotImplementedException(table.toString() + " " + column.toString());
         }
         String formattedColumnText = FormatUtils.replace("columnSizeOrMax",
                 trigger.isUseCaptureLobs() ? "max" : "$(columnSize)", templateToUse);

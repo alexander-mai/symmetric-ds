@@ -22,8 +22,12 @@ package org.jumpmind.db.platform.postgresql;
 
 import org.jumpmind.db.platform.DatabaseNamesConstants;
 
+/**
+ * PostgreSQL version 9.5 https://www.postgresql.org/docs/release/9.5.0/
+ */
 public class PostgreSqlDdlBuilder95 extends PostgreSqlDdlBuilder {
     public PostgreSqlDdlBuilder95() {
         this.databaseName = DatabaseNamesConstants.POSTGRESQL95;
+        this.databaseInfo.setTableLevelLoggingSupported(true);
     }
 }

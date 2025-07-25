@@ -51,6 +51,7 @@ import com.vaadin.flow.component.ClickEvent;
 import com.vaadin.flow.component.ComponentEventListener;
 import com.vaadin.flow.component.ComponentUtil;
 import com.vaadin.flow.component.Key;
+import com.vaadin.flow.component.Shortcuts;
 import com.vaadin.flow.component.UI;
 import com.vaadin.flow.component.button.Button;
 import com.vaadin.flow.component.button.ButtonVariant;
@@ -130,19 +131,19 @@ public final class CommonUiUtils {
         return editor;
     }
 
-    public static void notify(String message) {
-        notify("", message);
+    public static Notification notify(String message) {
+        return notify("", message);
     }
 
-    public static void notify(String message, Consumer<Boolean> shortcutToggler) {
-        notify("", message, shortcutToggler);
+    public static Notification notify(String message, Consumer<Boolean> shortcutToggler) {
+        return notify("", message, shortcutToggler);
     }
 
-    public static void notify(String caption, String message) {
-        notify(caption, message, null);
+    public static Notification notify(String caption, String message) {
+        return notify(caption, message, null);
     }
 
-    public static void notify(String caption, String message, Consumer<Boolean> shortcutToggler) {
+    public static Notification notify(String caption, String message, Consumer<Boolean> shortcutToggler) {
         Page page = UI.getCurrent().getPage();
         if (page != null) {
             HorizontalLayout layout = new HorizontalLayout();
@@ -175,20 +176,29 @@ public final class CommonUiUtils {
                     layout.add(vLayout);
                 }
             }
-            Icon closeIcon = new Icon(VaadinIcon.CLOSE_CIRCLE_O);
-            closeIcon.setSize("36px");
-            closeIcon.getStyle().set("min-width", "36px");
-            closeIcon.addClickListener(event -> notification.close());
-            closeIcon.addClickShortcut(Key.ESCAPE);
-            layout.add(closeIcon);
-            layout.setVerticalComponentAlignment(Alignment.START, closeIcon);
+            Icon closeIcon = new Icon(VaadinIcon.CLOSE_SMALL);
+            closeIcon.setSize("16px");
+            closeIcon.getStyle().set("position", "absolute").set("top", "50%").set("left", "50%").set("transform",
+                    "translate(-50%, -50%)");
+            Div closeDiv = new Div(closeIcon);
+            closeDiv.setHeight("24px");
+            closeDiv.setWidth("24px");
+            closeDiv.getStyle().set("min-height", "24px").set("min-width", "24px").set("position", "relative")
+                    .set("-webkit-border-radius", "50%").set("-moz-border-radius", "50%").set("border-radius", "50%")
+                    .set("background-color", "var(--lumo-contrast-10pct)").set("cursor", "pointer");
+            closeDiv.addClickListener(event -> notification.close());
+            layout.add(closeDiv);
+            layout.setVerticalComponentAlignment(Alignment.START, closeDiv);
             if (shortcutToggler != null) {
                 notification.addOpenedChangeListener(event -> shortcutToggler.accept(event.isOpened()));
             }
             notification.setPosition(Position.MIDDLE);
             notification.setDuration(-1);
+            Shortcuts.addShortcutListener(notification, () -> notification.close(), Key.ESCAPE);
             notification.open();
+            return notification;
         }
+        return null;
     }
 
     private static String contactWithLineFeed(String[] lines) {
@@ -199,20 +209,20 @@ public final class CommonUiUtils {
         return line.toString();
     }
 
-    public static void notifyError() {
-        notifyError((Consumer<Boolean>) null);
+    public static Notification notifyError() {
+        return notifyError((Consumer<Boolean>) null);
     }
 
-    public static void notifyError(Consumer<Boolean> shortcutToggler) {
-        notify("An unexpected error occurred", "See the log file for additional details", shortcutToggler);
+    public static Notification notifyError(Consumer<Boolean> shortcutToggler) {
+        return notify("An unexpected error occurred", "See the log file for additional details", shortcutToggler);
     }
 
-    public static void notifyError(String message) {
-        notifyError(message, null);
+    public static Notification notifyError(String message) {
+        return notifyError(message, null);
     }
 
-    public static void notifyError(String message, Consumer<Boolean> shortcutToggler) {
-        notify("An error occurred", message, shortcutToggler);
+    public static Notification notifyError(String message, Consumer<Boolean> shortcutToggler) {
+        return notify("An error occurred", message, shortcutToggler);
     }
 
     public static Object getObject(ResultSet rs, int i) throws SQLException {
@@ -270,7 +280,7 @@ public final class CommonUiUtils {
                     columnNames.add(columnName);
                     int colNum = columnCounter[0] - 1 - skipColumnIndexes.size();
                     columnVisibilityToggler.addColumn(grid.addColumn(row -> row.get(colNum)).setKey(columnName)
-                            .setHeader(columnName).setClassNameGenerator(row -> {
+                            .setHeader(columnName).setPartNameGenerator(row -> {
                                 if (row.get(colNum) == null) {
                                     return "italics";
                                 }
@@ -471,5 +481,12 @@ public final class CommonUiUtils {
         menuBarIcon.getStyle().set("padding", "var(--lumo-space-xs)");
         menuBarIcon.getStyle().set("box-sizing", "border-box");
         return menuBarIcon;
+    }
+
+    public static boolean isFilteredOut(String text, String filter) {
+        if (StringUtils.isEmpty(filter)) {
+            return false;
+        }
+        return filter.length() > 2 ? !StringUtils.containsIgnoreCase(text, filter) : !StringUtils.startsWithIgnoreCase(text, filter);
     }
 }

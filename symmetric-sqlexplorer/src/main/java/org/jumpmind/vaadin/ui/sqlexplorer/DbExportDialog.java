@@ -28,6 +28,7 @@ import java.util.Arrays;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 import org.jumpmind.db.model.Table;
@@ -52,7 +53,9 @@ import com.vaadin.flow.component.html.Anchor;
 import com.vaadin.flow.component.html.Span;
 import com.vaadin.flow.component.radiobutton.RadioButtonGroup;
 import com.vaadin.flow.component.textfield.TextArea;
-import com.vaadin.flow.server.StreamResource;
+import com.vaadin.flow.server.HttpStatusCode;
+import com.vaadin.flow.server.streams.DownloadHandler;
+import com.vaadin.flow.server.streams.DownloadResponse;
 import com.vaadin.flow.component.orderedlayout.Scroller;
 import com.vaadin.flow.component.orderedlayout.VerticalLayout;
 import com.vaadin.flow.component.orderedlayout.Scroller.ScrollDirection;
@@ -158,7 +161,9 @@ public class DbExportDialog extends ResizableDialog {
         FormLayout formLayout = new FormLayout();
         formLayout.setSizeFull();
         optionContent.addAndExpand(formLayout);
-        formatSelect = new ComboBox<DbExportFormat>("Format", Arrays.asList(DbExportFormat.values()));
+        formatSelect = new ComboBox<DbExportFormat>("Format");
+        formatSelect.setItems((format, filter) -> !CommonUiUtils.isFilteredOut(Objects.toString(format, null), filter),
+                Arrays.asList(DbExportFormat.values()));
         formatSelect.setValue(DbExportFormat.SQL);
         formatSelect.addValueChangeListener(event -> {
             switch (formatSelect.getValue()) {
@@ -194,7 +199,9 @@ public class DbExportDialog extends ResizableDialog {
         formLayout.add(formatSelect);
         List<Compatible> compatibilityList = Arrays.asList(Compatible.values());
         compatibilityList.sort((c0, c1) -> c0.name().compareTo(c1.name()));
-        compatibilitySelect = new ComboBox<Compatible>("Compatibility", compatibilityList);
+        compatibilitySelect = new ComboBox<Compatible>("Compatibility");
+        compatibilitySelect.setItems((compatibile, filter) -> !CommonUiUtils.isFilteredOut(Objects.toString(compatibile, null), filter),
+                compatibilityList);
         setDefaultCompatibility();
         formLayout.add(compatibilitySelect);
         createInfo = new Checkbox("Create Tables");
@@ -354,7 +361,7 @@ public class DbExportDialog extends ResizableDialog {
         if (fileDownloader != null) {
             fileDownloader.remove();
         }
-        fileDownloader = new Anchor(createResource(), null);
+        fileDownloader = new Anchor(createDownloadHandler(), null);
         fileDownloader.getElement().setAttribute("download", true);
         fileDownloader.add(exportFileButton);
         fileDownloader.setVisible(exportFormatOptionGroup.getValue().equals(EXPORT_AS_A_FILE));
@@ -362,28 +369,28 @@ public class DbExportDialog extends ResizableDialog {
                 doneButton);
     }
 
-    private StreamResource createResource() {
+    private DownloadHandler createDownloadHandler() {
         String format = (String) formatSelect.getValue().toString();
         if (format.equals("CSV_DQUOTE")) {
             format = "CSV";
         }
         String datetime = new SimpleDateFormat("yyyyMMddhhmmss").format(new Date());
-        StreamResource sr = new StreamResource(String.format("table-export-%s." + format.toLowerCase(), datetime), () -> {
+        String fileName = String.format("table-export-%s." + format.toLowerCase(), datetime);
+        return DownloadHandler.fromInputStream(event -> {
             List<String> list = tableSelectionLayout.getSelectedTables();
             String[] array = new String[list.size()];
             list.toArray(array);
             createDbExport();
-            String script;
+            byte[] script;
             try {
-                script = dbExport.exportTables(array);
-                return new ByteArrayInputStream(script.getBytes());
+                script = dbExport.exportTables(array).getBytes();
+                return new DownloadResponse(new ByteArrayInputStream(script), fileName, null, script.length);
             } catch (IOException e) {
                 String msg = "Failed to export to a file";
                 log.error(msg, e);
-                CommonUiUtils.notifyError(msg, opened -> enableEscapeShortcut(!opened));
+                event.getUI().access(() -> CommonUiUtils.notifyError(msg, opened -> enableEscapeShortcut(!opened)));
+                return DownloadResponse.error(HttpStatusCode.INTERNAL_SERVER_ERROR);
             }
-            return null;
         });
-        return sr;
     }
 }

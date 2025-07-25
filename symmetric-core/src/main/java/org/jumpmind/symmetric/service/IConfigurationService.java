@@ -20,6 +20,7 @@
  */
 package org.jumpmind.symmetric.service;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
@@ -82,6 +83,8 @@ public interface IConfigurationService {
 
     public void deleteAllChannels();
 
+    public void deleteNodeChannelControl(String nodeId, String channelId);
+
     public List<NodeGroupChannelWindow> getNodeGroupChannelWindows(String nodeGroupId, String channelId);
 
     public Map<String, List<NodeGroupChannelWindow>> getNodeGroupChannelWindowsFromDb();
@@ -101,6 +104,8 @@ public interface IConfigurationService {
     public List<Channel> getFileSyncChannels();
 
     public Map<String, Channel> getChannels(boolean refreshCache);
+
+    public Collection<String> getQueues(boolean refreshCache);
 
     public Map<String, Channel> getChannelsFromDb();
 
@@ -137,4 +142,6 @@ public interface IConfigurationService {
     public boolean containsMasterToMaster();
 
     public boolean isMasterToMasterOnly();
+
+    public boolean isUseSourceStagingEnabled(String nodeId);
 }

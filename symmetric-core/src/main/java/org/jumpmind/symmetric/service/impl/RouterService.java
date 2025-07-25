@@ -63,10 +63,10 @@ import org.jumpmind.symmetric.model.Node;
 import org.jumpmind.symmetric.model.NodeChannel;
 import org.jumpmind.symmetric.model.NodeCommunication;
 import org.jumpmind.symmetric.model.NodeCommunication.CommunicationType;
-import org.jumpmind.symmetric.model.ProcessInfo.ProcessStatus;
 import org.jumpmind.symmetric.model.NodeGroupLink;
 import org.jumpmind.symmetric.model.OutgoingBatch;
 import org.jumpmind.symmetric.model.ProcessInfo;
+import org.jumpmind.symmetric.model.ProcessInfo.ProcessStatus;
 import org.jumpmind.symmetric.model.ProcessInfoKey;
 import org.jumpmind.symmetric.model.ProcessType;
 import org.jumpmind.symmetric.model.RemoteNodeStatus;
@@ -428,7 +428,7 @@ public class RouterService extends AbstractService implements IRouterService, IN
         Boolean producesCommonBatches = commonBatchesLastKnownState.get(channelId);
         long cacheTime = parameterService.getLong(ParameterConstants.CACHE_CHANNEL_COMMON_BATCHES_IN_MS);
         if (producesCommonBatches == null || System.currentTimeMillis() - commonBatchesCacheTime > cacheTime) {
-            producesCommonBatches = !Constants.CHANNEL_CONFIG.equals(channelId)
+            producesCommonBatches = !Constants.CHANNEL_CONFIG.equals(channelId) && !Constants.CHANNEL_SYSTEM.equals(channelId)
                     && !channel.isFileSyncFlag()
                     && !channel.isReloadFlag()
                     && !Constants.CHANNEL_HEARTBEAT.equals(channelId)
@@ -511,7 +511,7 @@ public class RouterService extends AbstractService implements IRouterService, IN
         Boolean onlyDefaultRoutersAssigned = defaultRouterOnlyLastKnownState.get(channelId);
         long cacheTime = parameterService.getLong(ParameterConstants.CACHE_CHANNEL_DEFAULT_ROUTER_IN_MS);
         if (onlyDefaultRoutersAssigned == null || System.currentTimeMillis() - defaultRoutersCacheTime > cacheTime) {
-            onlyDefaultRoutersAssigned = !Constants.CHANNEL_CONFIG.equals(channelId)
+            onlyDefaultRoutersAssigned = !Constants.CHANNEL_CONFIG.equals(channelId) && !Constants.CHANNEL_SYSTEM.equals(channelId)
                     && !channel.isFileSyncFlag()
                     && !channel.isReloadFlag()
                     && !Constants.CHANNEL_HEARTBEAT.equals(channelId)
@@ -968,7 +968,7 @@ public class RouterService extends AbstractService implements IRouterService, IN
                     }
                 }
                 if (nodeIds != null && nodeIds.size() > 0) {
-                    numberOfDataEventsInserted += insertDataEvents(processInfo, context, dataMetaData, nodeIds);
+                    numberOfDataEventsInserted += insertDataEvents(processInfo, context, dataMetaData, nodeIds, triggerRouter);
                 }
                 if (context.isForceNonCommon()) {
                     context.setForceNonCommon(false);
@@ -976,7 +976,7 @@ public class RouterService extends AbstractService implements IRouterService, IN
             }
             if (numberOfDataEventsInserted == 0) {
                 DataMetaData dataMetaData = new DataMetaData(data, table, null, context.getChannel());
-                numberOfDataEventsInserted += insertDataEvents(processInfo, context, dataMetaData, null);
+                numberOfDataEventsInserted += insertDataEvents(processInfo, context, dataMetaData, null, null);
             }
         } else {
             Integer triggerHistId = data.getTriggerHistory() != null ? data.getTriggerHistory().getTriggerHistoryId() : -1;
@@ -987,7 +987,7 @@ public class RouterService extends AbstractService implements IRouterService, IN
             }
             counterStat.incrementCount();
             numberOfDataEventsInserted += insertDataEvents(processInfo, context, new DataMetaData(data, table,
-                    null, context.getChannel()), new HashSet<String>(0));
+                    null, context.getChannel()), new HashSet<String>(0), null);
         }
         context.incrementStat(numberOfDataEventsInserted,
                 ChannelRouterContext.STAT_DATA_EVENTS_INSERTED);
@@ -995,7 +995,7 @@ public class RouterService extends AbstractService implements IRouterService, IN
     }
 
     protected int insertDataEvents(ProcessInfo processInfo, ChannelRouterContext context, DataMetaData dataMetaData,
-            Collection<String> nodeIds) {
+            Collection<String> nodeIds, TriggerRouter triggerRouter) {
         final long ts = System.currentTimeMillis();
         final String tableName = dataMetaData.getTable().getNameLowerCase();
         final DataEventType eventType = dataMetaData.getData().getDataEventType();
@@ -1010,8 +1010,19 @@ public class RouterService extends AbstractService implements IRouterService, IN
             nodeIds = new HashSet<String>(1);
             nodeIds.add(Constants.UNROUTED_NODE_ID);
         }
-        final boolean useCommonMode = ((context.isProduceGroupBatches() && !context.isForceNonCommon()) || context.isProduceCommonBatches())
+        boolean useCommonMode = ((context.isProduceGroupBatches() && !context.isForceNonCommon()) || context.isProduceCommonBatches())
                 && nodeIds.size() > 1;
+        if (eventType == DataEventType.RELOAD) {
+            // if where clause specified, take out of common mode
+            if (dataMetaData != null && dataMetaData.getData() != null) {
+                if (StringUtils.isNotEmpty(dataMetaData.getData().getRowData())) {
+                    useCommonMode = false;
+                }
+            }
+            if (triggerRouter != null && StringUtils.isNotEmpty(triggerRouter.getInitialLoadSelect())) {
+                useCommonMode = false;
+            }
+        }
         if (context.isProduceGroupBatches() && useCommonMode) {
             Map<Integer, Map<String, OutgoingBatch>> batchesByGroups = context.getBatchesByGroups();
             int groupKey = nodeIds.hashCode();
@@ -1035,9 +1046,9 @@ public class RouterService extends AbstractService implements IRouterService, IN
                 context.setNeedsCommitted(true);
             }
         } else if (eventType == DataEventType.CREATE) {
-            if (dataMetaData.getData().getPkData() != null) {
+            if (StringUtils.isNotBlank(dataMetaData.getData().getTransactionId())) {
                 try {
-                    loadId = Long.parseLong(dataMetaData.getData().getPkData());
+                    loadId = Long.parseLong(dataMetaData.getData().getTransactionId());
                 } catch (NumberFormatException e) {
                 }
             }
@@ -1191,6 +1202,9 @@ public class RouterService extends AbstractService implements IRouterService, IN
             if (lastGap != null) {
                 maxDataIdAlreadyRouted = lastGap.getStartId();
             }
+        }
+        if (maxDataIdAlreadyRouted == 0) {
+            return 0;
         }
         long leftToRoute = (engine.getDataService().findMaxDataId() - maxDataIdAlreadyRouted) + 1;
         if (leftToRoute > 0) {

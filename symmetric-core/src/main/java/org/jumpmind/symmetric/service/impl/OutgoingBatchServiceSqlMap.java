@@ -66,6 +66,7 @@ public class OutgoingBatchServiceSqlMap extends AbstractSqlMap {
                         + "  where batch_id=? and node_id != ?                    ");
         putSql("findOutgoingBatchSql", "where batch_id=? and node_id=?  ");
         putSql("findOutgoingBatchByIdOnlySql", "where batch_id=? ");
+        putSql("findOutgoingBatchFirstCommonSql", "where batch_id=? and common_flag=1 and extract_start_time is not null");
         putSql("selectOutgoingBatchSql",
                 "where node_id = ? and status in (?, ?, ?, ?, ?, ?, ?, ?) order by batch_id asc   ");
         putSql("selectOutgoingBatchChannelSql",
@@ -78,6 +79,8 @@ public class OutgoingBatchServiceSqlMap extends AbstractSqlMap {
                 " join $(channel) c on c.channel_id = b.channel_id" +
                         " where (c.data_event_action is null or c.data_event_action = ?)" +
                         " and b.node_id = ? and c.queue = ? and b.status in (?, ?, ?, ?, ?, ?, ?, ?) order by b.batch_id asc   ");
+        putSql("selectOutgoingBatchByThreadSql",
+                "where b.node_id = ? and b.channel_id = ? and b.status in (?, ?, ?, ?, ?, ?, ?, ?) and b.thread_id = ? order by b.batch_id asc");
         putSql("selectOutgoingBatchRangeSql",
                 "where batch_id between ? and ? order by batch_id   ");
         putSql("selectOutgoingBatchLoadSql",
@@ -97,25 +100,25 @@ public class OutgoingBatchServiceSqlMap extends AbstractSqlMap {
                         + "  b.transform_extract_millis, b.transform_load_millis, b.fallback_insert_count, b.fallback_update_count, "
                         + "  b.conflict_win_count, b.conflict_lose_count, b.ignore_row_count, b.missing_delete_count, b.skip_count, "
                         + "  b.failed_data_id, b.failed_line_number, b.last_update_hostname, b.last_update_time, b.create_time, b.batch_id, "
-                        + "  b.extract_job_flag, b.load_flag, b.error_flag, b.common_flag, b.load_id, b.create_by, b.summary, b.bulk_loader_flag from "
-                        + "  $(outgoing_batch) b ");
+                        + "  b.extract_job_flag, b.load_flag, b.error_flag, b.common_flag, b.load_id, b.create_by, b.summary, b.bulk_loader_flag, "
+                        + "  b.thread_id from $(outgoing_batch) b ");
         putSql("selectOutgoingBatchErrorsSql", " where error_flag=1 order by batch_id   ");
         putSql("countOutgoingBatchesErrorsOnChannelSql",
                 "select count(*) from $(outgoing_batch) where error_flag=1 and channel_id=?");
         putSql("countOutgoingBatchesByChannelSql",
                 "select count(*) as batch_count, channel_id from $(outgoing_batch) where node_id = ? and channel_id <> 'heartbeat' and status in ('ER','RQ','NE','QY','RT') group by channel_id order by batch_count desc, channel_id");
         putSql("countOutgoingRowsByTargetNodeSql",
-                "select sum(data_row_count) as row_count from $(outgoing_batch) where node_id = ? and channel_id <> 'heartbeat' and status in ('ER','RQ','NE','QY','RT')");
+                "select sum(data_row_count) as rows_count from $(outgoing_batch) where node_id = ? and channel_id <> 'heartbeat' and status in ('ER','RQ','NE','QY','RT')");
         putSql("countOutgoingBatchesByTargetNodeSql",
-                "select count(*) as row_count from $(outgoing_batch) where node_id = ? and status != 'OK'");
+                "select count(*) as rows_count from $(outgoing_batch) where node_id = ? and status != 'OK'");
         putSql("countOutgoingBatchesByTargetNodeExcludingHeartbeatsSql",
-                "select count(*) as row_count from $(outgoing_batch) where node_id = ? and channel_id <> 'heartbeat' and status in ('ER','RQ','NE','QY','RT')");
+                "select count(*) as rows_count from $(outgoing_batch) where node_id = ? and channel_id <> 'heartbeat' and status in ('ER','RQ','NE','QY','RT')");
         putSql("countOutgoingBatchesErrorsSql",
                 "select count(*) from $(outgoing_batch) where error_flag=1");
         putSql("countOutgoingBatchesUnsentSql",
                 "select count(*) from $(outgoing_batch) where status != 'OK'");
         putSql("countOutgoingNonSystemBatchesUnsentSql",
-                "select count(batch_id) as batch_count, sum(data_row_count) as row_count from $(outgoing_batch) where status != 'OK' and channel_id not in ('heartbeat', 'monitor', 'config')");
+                "select count(batch_id) as batch_count, sum(data_row_count) as rows_count from $(outgoing_batch) where status != 'OK' and channel_id not in ('heartbeat', 'monitor', 'config')");
         putSql("getOutgoingBatchesLatestUpdateSql",
                 "select max(last_update_time) from $(outgoing_batch) where status = 'OK' and channel_id not in ('heartbeat', 'monitor', 'config')");
         putSql("countOutgoingBatchesWithStatusSql",
@@ -126,6 +129,11 @@ public class OutgoingBatchServiceSqlMap extends AbstractSqlMap {
                 "select count(distinct b.node_id) from $(outgoing_batch) b inner join $(data_event) e on e.batch_id = b.batch_id " +
                         "inner join $(data) d on d.data_id = e.data_id " +
                         "where b.channel_id = 'heartbeat' and b.status != 'OK' and d.source_node_id is null");
+        putSql("countUnsentBatchesBlocked", "select count(*) as batch_count, count(distinct b1.node_id) as node_count from sym_outgoing_batch b1 "
+                + "inner join sym_outgoing_batch b2 "
+                + "on b1.batch_id >= b2.batch_id and b1.node_id = b2.node_id and b1.channel_id = b2.channel_id "
+                + "where b2.error_flag = 1 "
+                + "and b1.status != 'OK'");
         putSql("selectOutgoingBatchSummaryPrefixSql",
                 "select b.status ");
         putSql("selectOutgoingBatchSummaryByNodePrefixSql",
@@ -179,5 +187,6 @@ public class OutgoingBatchServiceSqlMap extends AbstractSqlMap {
                 "update $(outgoing_batch) set status=?, last_update_time=?, last_update_hostname=? where node_id=? and load_id=? and status=? and batch_id between ? and ?");
         putSql("updateOutgoingFinalizeBatchStatusByStatus",
                 "update $(outgoing_batch) set status=?, last_update_time=?, last_update_hostname=? where node_id=? and load_id=? and status=? and batch_id > ?");
+        putSql("selectReadyChannels", "select distinct node_id, channel_id, thread_id from $(outgoing_batch) where status in (?, ?, ?, ?, ?, ?, ?)");
     }
 }

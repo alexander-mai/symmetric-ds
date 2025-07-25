@@ -22,10 +22,18 @@ package org.jumpmind.symmetric.util;
 
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
 
+import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.io.StringReader;
+import java.net.URL;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -34,17 +42,38 @@ import java.util.Set;
 
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.jumpmind.db.model.Table;
 import org.jumpmind.db.model.Transaction;
+import org.jumpmind.db.sql.SqlScriptReader;
+import org.jumpmind.symmetric.ISymmetricEngine;
 import org.jumpmind.symmetric.Version;
 import org.jumpmind.symmetric.common.Constants;
 import org.jumpmind.symmetric.common.ParameterConstants;
+import org.jumpmind.symmetric.common.TableConstants;
 import org.jumpmind.symmetric.db.ISymmetricDialect;
+import org.jumpmind.symmetric.io.data.Batch.BatchType;
+import org.jumpmind.symmetric.io.data.CsvData;
+import org.jumpmind.symmetric.io.data.DataContext;
+import org.jumpmind.symmetric.io.data.DataEventType;
+import org.jumpmind.symmetric.io.data.IDataReader;
+import org.jumpmind.symmetric.io.data.reader.ProtocolDataReader;
 import org.jumpmind.symmetric.model.Node;
+import org.jumpmind.symmetric.transport.internal.InternalIncomingTransport;
 import org.jumpmind.util.AppUtils;
 import org.jumpmind.util.CollectionUtils;
 import org.jumpmind.util.FormatUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import bsh.EvalError;
+import bsh.Interpreter;
+import net.sf.jsqlparser.JSQLParserException;
+import net.sf.jsqlparser.expression.Expression;
+import net.sf.jsqlparser.expression.operators.relational.ExpressionList;
+import net.sf.jsqlparser.parser.CCJSqlParserUtil;
+import net.sf.jsqlparser.schema.Column;
+import net.sf.jsqlparser.statement.Statement;
+import net.sf.jsqlparser.statement.insert.Insert;
 
 final public class SymmetricUtils {
     private static final Logger log = LoggerFactory.getLogger(SymmetricUtils.class);
@@ -134,6 +163,51 @@ final public class SymmetricUtils {
         return str;
     }
 
+    public static String substituteScripts(String value, Map<String, String> replacementValues) {
+        if (log.isDebugEnabled()) {
+            log.debug("substituteScripts starting value is: {}", value);
+        }
+        if (replacementValues == null) {
+            replacementValues = new HashMap<String, String>();
+        }
+        int startTick = StringUtils.indexOf(value, '`');
+        if (startTick != -1) {
+            int endTick = StringUtils.lastIndexOf(value, '`');
+            if (endTick != -1 && startTick != endTick) {
+                // there's a bean shell script present in this case
+                String script = StringUtils.substring(value, startTick + 1, endTick);
+                if (log.isDebugEnabled()) {
+                    log.debug("Script found.  Script is is: {}", script);
+                }
+                Interpreter interpreter = new Interpreter();
+                try {
+                    interpreter.set("hostName", AppUtils.getHostName());
+                    interpreter.set("log", log);
+                    interpreter.set("nodeGroupId", replacementValues.get("nodeGroupId"));
+                    interpreter.set("syncUrl", replacementValues.get("syncUrl"));
+                    interpreter.set("registrationUrl", replacementValues.get("registrationUrl"));
+                    interpreter.set("externalId", replacementValues.get("externalId"));
+                    interpreter.set("engineName", replacementValues.get("engineName"));
+                    Object scriptResult = interpreter.eval(script);
+                    if (scriptResult == null) {
+                        scriptResult = "";
+                    }
+                    if (log.isDebugEnabled()) {
+                        log.debug("Script output is: {}", scriptResult);
+                    }
+                    value = StringUtils.substring(value, 0, startTick) + scriptResult.toString() +
+                            StringUtils.substring(value, endTick + 1);
+                } catch (EvalError e) {
+                    throw new RuntimeException(e.getMessage(), e);
+                }
+                if (log.isDebugEnabled()) {
+                    log.debug("substituteScripts return value is {}", value);
+                }
+            }
+        }
+        return value;
+    }
+
     public static void logNotices() {
         synchronized (SymmetricUtils.class) {
             if (isNoticeLogged) {
@@ -185,6 +259,14 @@ final public class SymmetricUtils {
 
     public static boolean filterTransactions(Transaction transaction, Map<String, Transaction> transactionMap,
             List<Transaction> filteredTransactions, String dbUser, boolean isBlockingUser, boolean isBlocking) {
+        return SymmetricUtils.filterTransactions(transaction, transactionMap, filteredTransactions, dbUser, isBlockingUser, isBlocking, 0);
+    }
+
+    public static boolean filterTransactions(Transaction transaction, Map<String, Transaction> transactionMap,
+            List<Transaction> filteredTransactions, String dbUser, boolean isBlockingUser, boolean isBlocking, int level) {
+        if (level > 500) {
+            return false;
+        }
         Transaction blockingTransaction = transactionMap.get(transaction.getBlockingId());
         if (!isBlocking && blockingTransaction == null) {
             return false;
@@ -195,12 +277,12 @@ final public class SymmetricUtils {
         if (isBlockingUser || (dbUser != null && dbUser.equalsIgnoreCase(transaction.getUsername()))) {
             filteredTransactions.add(transaction);
             if (blockingTransaction != null) {
-                filterTransactions(blockingTransaction, transactionMap, filteredTransactions, dbUser, true, true);
+                filterTransactions(blockingTransaction, transactionMap, filteredTransactions, dbUser, true, true, level + 1);
             }
             return true;
         }
         if (blockingTransaction != null
-                && filterTransactions(blockingTransaction, transactionMap, filteredTransactions, dbUser, false, true)) {
+                && filterTransactions(blockingTransaction, transactionMap, filteredTransactions, dbUser, false, true, level + 1)) {
             filteredTransactions.add(transaction);
             return true;
         }
@@ -228,5 +310,99 @@ final public class SymmetricUtils {
             }
         }
         return Constants.DEPLOYMENT_SUB_TYPE_TRIGGER_BASED;
+    }
+
+    public static boolean importContainsCurrentGroup(ISymmetricEngine engine, String importedContent, boolean isCsv) {
+        return importContainsCurrentGroup(engine, new StringReader(importedContent), isCsv);
+    }
+
+    public static boolean importContainsCurrentGroup(ISymmetricEngine engine, URL importedContentUrl, boolean isCsv) {
+        try {
+            return importContainsCurrentGroup(engine, new InputStreamReader(importedContentUrl.openStream(), StandardCharsets.UTF_8.name()), isCsv);
+        } catch (IOException e) {
+            log.warn("Unable to read imported configuration, so assuming it includes the {} group", engine.getParameterService().getNodeGroupId());
+            log.debug("Exception: ", e);
+            return true;
+        }
+    }
+
+    public static boolean importContainsCurrentGroup(ISymmetricEngine engine, Reader importedContentReader, boolean isCsv) {
+        boolean foundGroup = false;
+        String groupId = engine.getParameterService().getNodeGroupId();
+        String groupTableName = TableConstants.getTableName(engine.getTablePrefix(), TableConstants.SYM_NODE_GROUP);
+        if (isCsv) {
+            IDataReader dataReader = null;
+            try {
+                dataReader = new ProtocolDataReader(BatchType.LOAD, engine.getNodeId(),
+                        new InternalIncomingTransport(new BufferedReader(importedContentReader)).openReader(), false);
+                dataReader.open(new DataContext());
+                dataReader.nextBatch();
+                Table table = dataReader.nextTable();
+                tableLoop: while (table != null) {
+                    if (StringUtils.equalsIgnoreCase(table.getName(), groupTableName)) {
+                        CsvData data = dataReader.nextData();
+                        while (data != null) {
+                            if (DataEventType.INSERT.equals(data.getDataEventType())) {
+                                if (StringUtils.equals(groupId, data.toKeyColumnValuePairs(table).get("node_group_id"))) {
+                                    foundGroup = true;
+                                    break tableLoop;
+                                }
+                            }
+                            data = dataReader.nextData();
+                        }
+                    }
+                    table = dataReader.nextTable();
+                }
+            } catch (IOException e) {
+                log.warn("Unable to read imported CSV data, so assuming it includes the {} group", groupId);
+                log.debug("Exception: ", e);
+                foundGroup = true;
+            } finally {
+                if (dataReader != null) {
+                    dataReader.close();
+                }
+            }
+        } else {
+            SqlScriptReader sqlReader = new SqlScriptReader(importedContentReader, false);
+            String sql = sqlReader.readSqlStatement();
+            sqlLoop: while (sql != null) {
+                try {
+                    Statement statement = CCJSqlParserUtil.parse(sql);
+                    if (statement instanceof Insert insert
+                            && StringUtils.equalsAnyIgnoreCase(insert.getTable().getName(), groupTableName, "\"" + groupTableName + "\"")) {
+                        List<Expression> valueList = insert.getItemsList(ExpressionList.class).getExpressions();
+                        if (valueList != null && !valueList.isEmpty()) {
+                            List<Column> columnList = insert.getColumns();
+                            if (columnList != null && !columnList.isEmpty()) {
+                                for (int i = 0; i < columnList.size() && i < valueList.size(); i++) {
+                                    if (StringUtils.equalsAnyIgnoreCase(columnList.get(i).getColumnName(), "node_group_id", "\"node_group_id\"")
+                                            && StringUtils.equals(valueList.get(i).getASTNode().jjtGetValue().toString(), "'" + groupId + "'")) {
+                                        foundGroup = true;
+                                        break sqlLoop;
+                                    }
+                                }
+                            } else if (StringUtils.equals(valueList.get(0).getASTNode().jjtGetValue().toString(), "'" + groupId + "'")) {
+                                foundGroup = true;
+                                break;
+                            }
+                        }
+                    }
+                } catch (JSQLParserException e) {
+                    if (StringUtils.containsIgnoreCase(sql, "insert") && StringUtils.containsIgnoreCase(sql, groupTableName) && sql.contains(groupId)) {
+                        log.warn("Unable to parse the following imported SQL, so assuming it's an insert for the {} node group: {}", groupId, sql);
+                        log.debug("Parse exception: ", e);
+                        foundGroup = true;
+                        break;
+                    }
+                }
+                sql = sqlReader.readSqlStatement();
+            }
+            try {
+                sqlReader.close();
+            } catch (IOException e) {
+                log.warn("Failed to close reader after reading imported SQL", e);
+            }
+        }
+        return foundGroup;
     }
 }

@@ -31,10 +31,11 @@ import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.SslConnectionFactory;
 import org.eclipse.jetty.util.ssl.SslContextFactory;
-import org.eclipse.jetty.webapp.WebAppContext;
+import org.eclipse.jetty.ee10.webapp.WebAppContext;
 import org.jumpmind.properties.TypedProperties;
 import org.jumpmind.security.SecurityConstants;
 import org.jumpmind.symmetric.common.ServerConstants;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.web.embedded.jetty.JettyServerCustomizer;
 import org.springframework.boot.web.embedded.jetty.JettyServletWebServerFactory;
 import org.springframework.boot.web.server.WebServerFactoryCustomizer;
@@ -43,6 +44,7 @@ import org.springframework.stereotype.Component;
 import jakarta.servlet.ServletContext;
 
 @Component
+@ConditionalOnClass(Server.class)
 public class JettyCustomizer implements WebServerFactoryCustomizer<JettyServletWebServerFactory>, JettyServerCustomizer {
     protected WebAppContext webapp;
 

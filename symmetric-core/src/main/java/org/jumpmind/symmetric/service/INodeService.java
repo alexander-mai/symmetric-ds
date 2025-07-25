@@ -85,6 +85,8 @@ public interface INodeService {
 
     public void deleteNodeHost(String nodeId);
 
+    public void deleteNodeHostInstance(String nodeId, String instanceId);
+
     public void deleteNodeSecurity(String nodeId);
 
     public void deleteNode(String nodeId, boolean syncChange);
@@ -167,6 +169,10 @@ public interface INodeService {
             String createBy);
 
     public boolean setInitialLoadEnded(ISqlTransaction transaction, String nodeId);
+
+    public boolean setPartialLoadStarted(ISqlTransaction transaction, String nodeId, long loadId, String createBy);
+
+    public boolean setPartialLoadEnded(ISqlTransaction transaction, String nodeId);
 
     public boolean setReverseInitialLoadEnabled(ISqlTransaction transaction, String nodeId, boolean initialLoadEnabled, boolean syncChange, long loadId,
             String createBy);

@@ -22,6 +22,7 @@ package org.jumpmind.symmetric.model;
 
 import java.io.Serializable;
 import java.util.Date;
+import java.util.Objects;
 
 public class ExtractRequest implements Serializable {
     private static final long serialVersionUID = 1L;
@@ -53,6 +54,30 @@ public class ExtractRequest implements Serializable {
     private long transferredMillis;
     private long loadedMillis;
     private long parentRequestId;
+    private long numRowsBulkLoaded;
+    private Date loadedTime;
+    private Integer extractThreadId;
+    private Integer loadThreadId;
+
+    public Integer getThreadId() {
+        return getThreadId(status);
+    }
+
+    public Integer getThreadId(ExtractStatus s) {
+        return s == null || s == ExtractStatus.NE || s == ExtractStatus.LS ? extractThreadId : loadThreadId;
+    }
+
+    public void setThreadId(Integer threadId) {
+        setThreadId(threadId, status);
+    }
+
+    public void setThreadId(Integer threadId, ExtractStatus s) {
+        if (s == null || s == ExtractStatus.NE || s == ExtractStatus.LS) {
+            extractThreadId = threadId;
+        } else {
+            loadThreadId = threadId;
+        }
+    }
 
     public long getRequestId() {
         return requestId;
@@ -236,5 +261,55 @@ public class ExtractRequest implements Serializable {
 
     public void setExtractedMillis(long extractedMillis) {
         this.extractedMillis = extractedMillis;
+    }
+
+    public Integer getExtractThreadId() {
+        return extractThreadId;
+    }
+
+    public void setExtractThreadId(Integer extractThreadId) {
+        this.extractThreadId = extractThreadId;
+    }
+
+    public Integer getLoadThreadId() {
+        return loadThreadId;
+    }
+
+    public void setLoadThreadId(Integer loadThreadId) {
+        this.loadThreadId = loadThreadId;
+    }
+
+    public void setNumRowsBulkLoaded(long numRowsBulkLoaded) {
+        this.numRowsBulkLoaded = numRowsBulkLoaded;
+    }
+
+    public long getNumRowsBulkLoaded() {
+        return this.numRowsBulkLoaded;
+    }
+
+    public Date getLoadedTime() {
+        return loadedTime;
+    }
+
+    public void setLoadedTime(Date loadedTime) {
+        this.loadedTime = loadedTime;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(requestId);
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        } else if (obj == null) {
+            return false;
+        } else if (getClass() != obj.getClass()) {
+            return false;
+        }
+        ExtractRequest other = (ExtractRequest) obj;
+        return requestId == other.requestId;
     }
 }

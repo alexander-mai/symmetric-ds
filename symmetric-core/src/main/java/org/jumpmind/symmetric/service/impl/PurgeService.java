@@ -25,11 +25,11 @@ import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
 import java.util.function.LongConsumer;
 
-import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.time.DateUtils;
 import org.apache.commons.lang3.time.FastDateFormat;
 import org.jumpmind.db.platform.DatabaseNamesConstants;
@@ -74,6 +74,7 @@ public class PurgeService extends AbstractService implements IPurgeService {
     private IExtensionService extensionService;
     private IContextService contextService;
     private FastDateFormat fastFormat = FastDateFormat.getInstance("yyyy-MM-dd HH:mm:ss.SSS");
+    private final int MINS_IN_ONE_WEEK = 10080;
 
     public PurgeService(IParameterService parameterService, ISymmetricDialect symmetricDialect, IClusterService clusterService,
             IDataService dataService, ISequenceService sequenceService, IStatisticManager statisticManager, IExtensionService extensionService,
@@ -234,7 +235,7 @@ public class PurgeService extends AbstractService implements IPurgeService {
         if (rangeMinMax[1] == minMax[1]) {
             minMax[1] = -1;
         } else {
-            minMax[0] = notOkBatchId + 1;
+            minMax[0] = notOkBatchId;
         }
         return minMax;
     }
@@ -281,8 +282,8 @@ public class PurgeService extends AbstractService implements IPurgeService {
             } else {
                 break;
             }
-            log.info("Done purging {} lingering batches and {} rows", totalBatchesPurged, totalRowsPurged);
         }
+        log.info("Done purging {} lingering batches and {} rows", totalBatchesPurged, totalRowsPurged);
         return totalRowsPurged;
     }
 
@@ -553,8 +554,15 @@ public class PurgeService extends AbstractService implements IPurgeService {
     private long purgeTriggerHist() {
         Calendar retentionCutoff = Calendar.getInstance();
         retentionCutoff.add(Calendar.MINUTE, -parameterService.getInt(ParameterConstants.PURGE_TRIGGER_HIST_RETENTION_MINUTES));
-        log.info("Purging trigger histories that are inactive and older than {}", fastFormat.format(retentionCutoff.getTime()));
-        long count = sqlTemplate.update(getSql("deleteInactiveTriggerHistSql"), retentionCutoff.getTime());
+        Date retentionCutoffDate = retentionCutoff.getTime();
+        Timestamp minDataCreateTime = sqlTemplateDirty.queryForObject(getSql("minDataCreateTime"), Timestamp.class);
+        if (minDataCreateTime != null && minDataCreateTime.before(retentionCutoffDate)) {
+            log.warn("Skipping inactive trigger histories created between {} and {} because of a backlog of captured data",
+                    fastFormat.format(minDataCreateTime), fastFormat.format(retentionCutoffDate));
+            retentionCutoffDate = minDataCreateTime;
+        }
+        log.info("Purging trigger histories that are inactive and older than {}", fastFormat.format(retentionCutoffDate));
+        long count = sqlTemplate.update(getSql("deleteInactiveTriggerHistSql"), retentionCutoffDate);
         if (count > 0) {
             log.info("Purged {} trigger histories", count);
         }
@@ -852,8 +860,7 @@ public class PurgeService extends AbstractService implements IPurgeService {
 
     public void purgeStats(boolean force) {
         Calendar retentionCutoff = Calendar.getInstance();
-        retentionCutoff.add(Calendar.MINUTE,
-                -parameterService.getInt(ParameterConstants.PURGE_STATS_RETENTION_MINUTES));
+        retentionCutoff.add(Calendar.MINUTE, -Integer.max(parameterService.getInt(ParameterConstants.PURGE_STATS_RETENTION_MINUTES), MINS_IN_ONE_WEEK));
         if (force || clusterService.lock(ClusterConstants.PURGE_STATISTICS)) {
             try {
                 int purgedCount = sqlTemplate.update(getSql("purgeNodeHostChannelStatsSql"),
@@ -926,21 +933,24 @@ public class PurgeService extends AbstractService implements IPurgeService {
         context.setMinEventBatchId(startEventBatchId);
         // Leave 1 batch and its data around so MySQL auto increment doesn't reset
         long endBatchId = sequenceService.currVal(Constants.SEQUENCE_OUTGOING_BATCH) - 1;
-        List<Long> batchIds = sqlTemplateDirty.query(getSql("maxBatchIdByChannel"), new LongMapper(),
+        List<Long> batchIds = sqlTemplateDirty.query(getSql("maxBatchIdForOldBatches"), new LongMapper(),
                 new Object[] { startBatchId, endBatchId, new Timestamp(context.getRetentionCutoff().getTime().getTime()) },
                 new int[] { symmetricDialect.getSqlTypeForIds(), symmetricDialect.getSqlTypeForIds(), Types.TIMESTAMP });
         if (batchIds != null && batchIds.size() > 0) {
-            int[] types = new int[batchIds.size()];
-            for (int i = 0; i < batchIds.size(); i++) {
-                types[i] = symmetricDialect.getSqlTypeForIds();
-                if (batchIds.get(i) > context.getMaxBatchId()) {
-                    context.setMaxBatchId(batchIds.get(i));
+            context.setMaxBatchId(batchIds.get(0));
+            log.info("Max eligible batch ID: {}", context.getMaxBatchId());
+            List<Row> rows = sqlTemplateDirty.query(getSql("minMaxDataIdForOldBatches"), new Object[] { startBatchId,
+                    context.getMaxBatchId() }, new int[] { symmetricDialect.getSqlTypeForIds(), symmetricDialect.getSqlTypeForIds() });
+            if (rows != null && rows.size() > 0) {
+                Row row = rows.get(0);
+                long minDataId = row.getLong("min_data_id");
+                long maxDataId = row.getLong("max_data_id");
+                context.setMaxDataId(maxDataId);
+                log.info("Max eligible data ID: {}", context.getMaxDataId());
+                if (minDataId < context.getMinDataId()) {
+                    log.info("Moving starting data ID back from {} to {}", context.getMinDataId(), minDataId);
+                    context.setMinDataId(minDataId);
                 }
-            }
-            String sql = getSql("maxDataIdForBatches").replace("?", StringUtils.repeat("?", ",", batchIds.size()));
-            List<Long> ids = sqlTemplateDirty.query(sql, new LongMapper(), batchIds.toArray(), types);
-            if (ids != null && ids.size() > 0) {
-                context.setMaxDataId(ids.get(0));
             }
         }
         context.setMinDataGapStartId(sqlTemplateDirty.queryForLong(getSql("minDataGapStartId")));

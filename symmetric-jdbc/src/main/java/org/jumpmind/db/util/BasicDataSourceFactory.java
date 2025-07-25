@@ -22,6 +22,7 @@ package org.jumpmind.db.util;
 
 import java.sql.Driver;
 import java.sql.DriverManager;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashMap;
@@ -98,7 +99,9 @@ public class BasicDataSourceFactory {
                         + BasicDataSourcePropertyConstants.DB_POOL_USER + " property.   Please re-encrypt your user", ex);
             }
         }
-        dataSource.setUsername(user);
+        if (!StringUtils.isEmpty(user)) {
+            dataSource.setUsername(user);
+        }
         String password = properties.get(BasicDataSourcePropertyConstants.DB_POOL_PASSWORD, "");
         if (password != null && password.startsWith(SecurityConstants.PREFIX_ENC)) {
             try {
@@ -109,20 +112,22 @@ public class BasicDataSourceFactory {
                         + BasicDataSourcePropertyConstants.DB_POOL_PASSWORD + " property.   Please re-encrypt your password", ex);
             }
         }
-        dataSource.setPassword(password);
+        if (!StringUtils.isEmpty(password)) {
+            dataSource.setPassword(password);
+        }
         dataSource.setInitialSize(properties.getInt(
                 BasicDataSourcePropertyConstants.DB_POOL_INITIAL_SIZE, 2));
         dataSource.setMaxTotal(properties.getInt(
                 BasicDataSourcePropertyConstants.DB_POOL_MAX_ACTIVE, 10));
-        dataSource.setMaxWaitMillis(properties.getInt(BasicDataSourcePropertyConstants.DB_POOL_MAX_WAIT,
-                5000));
+        dataSource.setMaxWait(
+                Duration.ofMillis(properties.getInt(BasicDataSourcePropertyConstants.DB_POOL_MAX_WAIT, 5000)));
         dataSource.setMaxIdle(properties.getInt(BasicDataSourcePropertyConstants.DB_POOL_MAX_IDLE,
                 8));
         dataSource.setMinIdle(properties.getInt(BasicDataSourcePropertyConstants.DB_POOL_MIN_IDLE,
                 0));
-        dataSource.setMinEvictableIdleTimeMillis(properties.getInt(
-                BasicDataSourcePropertyConstants.DB_POOL_MIN_EVICTABLE_IDLE_TIME_MILLIS, 60000));
-        dataSource.setTimeBetweenEvictionRunsMillis(120000);
+        dataSource.setMinEvictableIdle(Duration.ofMillis(
+                properties.getInt(BasicDataSourcePropertyConstants.DB_POOL_MIN_EVICTABLE_IDLE_TIME_MILLIS, 60000)));
+        dataSource.setDurationBetweenEvictionRuns(Duration.ofMillis(120000));
         dataSource.setNumTestsPerEvictionRun(10);
         dataSource.setValidationQuery(properties.get(
                 BasicDataSourcePropertyConstants.DB_POOL_VALIDATION_QUERY, null));

@@ -136,6 +136,16 @@ public class OracleDdlReader extends AbstractJdbcDdlReader {
     }
 
     @Override
+    protected void genericizeDefaultValuesAndUpdatePlatformColumn(Column column) {
+        super.genericizeDefaultValuesAndUpdatePlatformColumn(column);
+        String defaultValue = column.getDefaultValue();
+        if ("sysdate".equalsIgnoreCase(defaultValue)) {
+            column.setDefaultValue("CURRENT_TIMESTAMP");
+            column.findPlatformColumn(platform.getName()).setDefaultValue(defaultValue);
+        }
+    }
+
+    @Override
     protected Integer mapUnknownJdbcTypeForColumn(Map<String, Object> values) {
         String typeName = (String) values.get("TYPE_NAME");
         if (typeName != null && typeName.startsWith("DATE")) {
@@ -274,6 +284,9 @@ public class OracleDdlReader extends AbstractJdbcDdlReader {
                 defaultValue = defaultValue.substring(2, defaultValue.length() - 2);
             }
             column.setDefaultValue(unescape(defaultValue, "'", "''"));
+            if (column.getMappedTypeCode() == Types.SQLXML) {
+                column.setGenerated(false);
+            }
         }
         return column;
     }
@@ -491,10 +504,10 @@ public class OracleDdlReader extends AbstractJdbcDdlReader {
             sqlTemplate.query(sourceSql, new ISqlRowMapper<Trigger>() {
                 public Trigger mapRow(Row row) {
                     String line = row.getString("TEXT");
+                    buff.append(line);
                     if (!line.endsWith("\n")) {
                         buff.append("\n");
                     }
-                    buff.append(line);
                     return trigger;
                 }
             }, schema, name);

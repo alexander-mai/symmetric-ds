@@ -35,6 +35,7 @@ import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
@@ -59,6 +60,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipException;
 
+import javax.crypto.BadPaddingException;
+import javax.crypto.IllegalBlockSizeException;
+
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.time.DurationFormatUtils;
@@ -80,6 +84,7 @@ import org.jumpmind.symmetric.common.Constants;
 import org.jumpmind.symmetric.common.ErrorConstants;
 import org.jumpmind.symmetric.common.ParameterConstants;
 import org.jumpmind.symmetric.common.TableConstants;
+import org.jumpmind.symmetric.ext.IReloadQueueThreadAssigner;
 import org.jumpmind.symmetric.extract.ExtractDataReaderFactory;
 import org.jumpmind.symmetric.extract.IExtractDataReaderFactory;
 import org.jumpmind.symmetric.extract.MultiBatchStagingWriter;
@@ -125,6 +130,7 @@ import org.jumpmind.symmetric.model.NodeCommunication;
 import org.jumpmind.symmetric.model.NodeCommunication.CommunicationType;
 import org.jumpmind.symmetric.model.NodeGroupLink;
 import org.jumpmind.symmetric.model.NodeGroupLinkAction;
+import org.jumpmind.symmetric.model.NodeSecurity;
 import org.jumpmind.symmetric.model.OutgoingBatch;
 import org.jumpmind.symmetric.model.OutgoingBatchWithPayload;
 import org.jumpmind.symmetric.model.OutgoingBatches;
@@ -159,6 +165,7 @@ import org.jumpmind.symmetric.service.impl.TransformService.TransformTableNodeGr
 import org.jumpmind.symmetric.statistic.IStatisticManager;
 import org.jumpmind.symmetric.transport.BatchBufferedWriter;
 import org.jumpmind.symmetric.transport.IOutgoingTransport;
+import org.jumpmind.symmetric.util.QueueThread;
 import org.jumpmind.util.AppUtils;
 import org.jumpmind.util.CustomizableThreadFactory;
 import org.jumpmind.util.ExceptionUtils;
@@ -173,6 +180,7 @@ import org.slf4j.MDC;
 public class DataExtractorService extends AbstractService implements IDataExtractorService,
         INodeCommunicationExecutor {
     final static long MS_PASSED_BEFORE_BATCH_REQUERIED = 5000;
+    final static long BACKOFF_BYTE_THRESHOLD = 2048;
 
     protected enum ExtractMode {
         FOR_SYM_CLIENT, FOR_PAYLOAD_CLIENT, EXTRACT_ONLY
@@ -194,6 +202,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
     private IClusterService clusterService;
     private Map<String, BatchLock> locks = new ConcurrentHashMap<String, BatchLock>();
     private CustomizableThreadFactory threadPoolFactory;
+    private long backOffCount;
 
     public DataExtractorService(ISymmetricEngine engine) {
         super(engine.getParameterService(), engine.getSymmetricDialect());
@@ -218,6 +227,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
     /**
      * Extract the SymmetricDS configuration for the passed in {@link Node}.
      */
+    @Override
     public void extractConfigurationStandalone(Node targetNode, Writer writer, String... tablesToExclude) {
         Node sourceNode = nodeService.findIdentity();
         if (targetNode != null && sourceNode != null) {
@@ -235,7 +245,8 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                 Trigger trigger = triggerRouter.getTrigger();
                 String channelId = trigger.getChannelId();
                 String tableName = trigger.getSourceTableName();
-                if ((Constants.CHANNEL_CONFIG.equals(channelId) || Constants.CHANNEL_HEARTBEAT.equals(channelId)) && helper.shouldSendTable(tableName)) {
+                if ((Constants.CHANNEL_CONFIG.equals(channelId) || Constants.CHANNEL_SYSTEM.equals(channelId) || Constants.CHANNEL_HEARTBEAT.equals(channelId))
+                        && helper.shouldSendTable(tableName)) {
                     TriggerHistory triggerHistory = triggerRouterService.getNewestTriggerHistoryForTrigger(trigger.getTriggerId(), null, null, tableName);
                     if (triggerHistory == null) {
                         Table table = platform.getTableFromCache(trigger.getSourceCatalogName(), trigger.getSourceSchemaName(), tableName, false);
@@ -282,7 +293,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
             }
             SelectFromTableSource source = new SelectFromTableSource(engine, batch, initialLoadEvents);
             source.setConfiguration(true);
-            ExtractDataReader dataReader = new ExtractDataReader(symmetricDialect.getPlatform(), source);
+            ExtractDataReader dataReader = new ExtractDataReader(symmetricDialect.getPlatform(), source, symmetricDialect.getTargetPlatform());
             ProtocolDataWriter dataWriter = new ProtocolDataWriter(nodeService.findIdentityNodeId(), writer, targetNode.requires13Compatiblity(), false, false);
             List<TransformTableNodeGroupLink> transformsList = transformService.getConfigExtractTransforms(nodeGroupLink);
             TransformTable[] transforms = transformsList.toArray(new TransformTable[transformsList.size()]);
@@ -311,7 +322,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
     }
 
     private List<OutgoingBatch> filterBatchesForExtraction(OutgoingBatches batches,
-            ChannelMap suspendIgnoreChannelsList) {
+            ChannelMap suspendIgnoreChannelsList, String queue, Node targetNode) {
         if (parameterService.is(ParameterConstants.FILE_SYNC_ENABLE)) {
             List<Channel> fileSyncChannels = configurationService.getFileSyncChannels();
             for (Channel channel : fileSyncChannels) {
@@ -339,15 +350,36 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
         batches.filterBatchesForChannels(suspendIgnoreChannelsList.getSuspendChannels());
         // Remove non-load batches so that an initial load finishes before
         // any other batches are loaded.
-        if (parameterService.is(ParameterConstants.INITIAL_LOAD_BLOCK_CHANNELS, true)) {
-            if (batches.containsLoadBatches() && !(parameterService.is(ParameterConstants.INITIAL_LOAD_UNBLOCK_CHANNELS_ON_ERROR, true)
-                    && batches.containsBatchesInError())) {
-                batches.removeNonLoadBatches();
+        if (parameterService.is(ParameterConstants.INITIAL_LOAD_BLOCK_CHANNELS, true) && !Constants.QUEUE_RELOAD.equals(QueueThread.getQueueName(queue))) {
+            if (batches.containsLoadBatches()) {
+                if (!(parameterService.is(ParameterConstants.INITIAL_LOAD_UNBLOCK_CHANNELS_ON_ERROR, true) && batches.containsBatchesInError())) {
+                    batches.removeNonLoadBatches();
+                    log.info("Pausing non-load batches from queue {} for target node {} because a load is active", queue, targetNode);
+                }
+            } else {
+                NodeSecurity nodeSecurity = nodeService.findNodeSecurity(targetNode.getNodeId(), true);
+                if (nodeSecurity != null) {
+                    long loadId = 0;
+                    if (nodeSecurity.getInitialLoadTime() != null && nodeSecurity.getInitialLoadEndTime() == null) {
+                        loadId = nodeSecurity.getInitialLoadId();
+                    } else if (nodeSecurity.getPartialLoadTime() != null && nodeSecurity.getPartialLoadEndTime() == null) {
+                        loadId = nodeSecurity.getPartialLoadId();
+                    }
+                    if (loadId != 0) {
+                        TableReloadStatus status = dataService.getTableReloadStatusByLoadIdAndSourceNodeId(loadId, engine.getNodeId());
+                        if (status != null && status.getDataBatchLoaded() < status.getDataBatchCount()) {
+                            batches.removeNonLoadBatches();
+                            log.info("Pausing non-load batches from queue {} for target node {} because load ID {} is active", queue, targetNode,
+                                    status.getLoadId());
+                        }
+                    }
+                }
             }
         }
         return batches.getBatches();
     }
 
+    @Override
     public List<OutgoingBatchWithPayload> extractToPayload(ProcessInfo processInfo,
             Node targetNode, PayloadType payloadType, boolean useJdbcTimestampFormat,
             boolean useUpsertStatements, boolean useDelimiterIdentifiers) {
@@ -356,7 +388,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
         if (batches.containsBatches()) {
             ChannelMap channelMap = configurationService.getSuspendIgnoreChannelLists(targetNode
                     .getNodeId());
-            List<OutgoingBatch> activeBatches = filterBatchesForExtraction(batches, channelMap);
+            List<OutgoingBatch> activeBatches = filterBatchesForExtraction(batches, channelMap, null, targetNode);
             if (activeBatches.size() > 0) {
                 IDdlBuilder builder = DdlBuilderFactory.getInstance().create(targetNode.getDatabaseType());
                 if (builder == null) {
@@ -386,11 +418,13 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
         return Collections.emptyList();
     }
 
+    @Override
     public List<OutgoingBatch> extract(ProcessInfo extractInfo, Node targetNode,
             IOutgoingTransport transport) {
         return extract(extractInfo, targetNode, null, transport);
     }
 
+    @Override
     public List<OutgoingBatch> extract(ProcessInfo extractInfo, Node targetNode, String queue,
             IOutgoingTransport transport) {
         /*
@@ -411,7 +445,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
         if (batches != null && batches.containsBatches()) {
             ChannelMap channelMap = transport.getSuspendIgnoreChannelLists(configurationService, queue,
                     targetNode);
-            List<OutgoingBatch> activeBatches = filterBatchesForExtraction(batches, channelMap);
+            List<OutgoingBatch> activeBatches = filterBatchesForExtraction(batches, channelMap, queue, targetNode);
             if (activeBatches.size() > 0) {
                 BufferedWriter writer = transport.openWriter();
                 IDataWriter dataWriter = new ProtocolDataWriter(nodeService.findIdentityNodeId(),
@@ -484,6 +518,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
     /**
      * This method will extract an outgoing batch, but will not update the outgoing batch status
      */
+    @Override
     public boolean extractOnlyOutgoingBatch(String nodeId, long batchId, Writer writer) {
         boolean extracted = false;
         Node targetNode = null;
@@ -593,9 +628,10 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                                 transferInfo.setStatus(ProcessStatus.OK);
                                 break;
                             }
-                            if (streamToFileEnabled || mode == ExtractMode.FOR_PAYLOAD_CLIENT || (currentBatch.isExtractJobFlag() && parameterService.is(
-                                    ParameterConstants.INITIAL_LOAD_USE_EXTRACT_JOB))) {
-                                if (totalBytesSend > initialLoadMaxBytesToSync) {
+                            if (streamToFileEnabled || mode == ExtractMode.FOR_PAYLOAD_CLIENT) {
+                                Channel channel = configurationService.getChannel(currentBatch.getChannelId());
+                                if (channel != null && channel.isReloadFlag() && totalBytesSend != 0 &&
+                                        totalBytesSend + currentBatch.getByteCount() > initialLoadMaxBytesToSync) {
                                     if (!logMaxBytesReached) {
                                         logMaxBytesReached = true;
                                         log.info(
@@ -603,6 +639,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                                                         + "The remaining batches will be send on a subsequent sync.",
                                                 new Object[] { i, futures.size(), targetNode.getNodeId(), totalBytesSend, initialLoadMaxBytesToSync });
                                     }
+                                    changeBatchStatus(Status.NE, currentBatch, mode);
                                     transferInfo.setStatus(ProcessStatus.OK);
                                     break;
                                 }
@@ -612,6 +649,8 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                                 currentBatch = sendOutgoingBatch(transferInfo, targetNode, currentBatch, isRetry,
                                         dataWriter, writer, mode);
                                 totalBytesSend += currentBatch.getByteCount();
+                                log.debug("Sent batch {} with {} bytes, total bytes sent is {}", currentBatch.getNodeBatchId(), currentBatch.getByteCount(),
+                                        totalBytesSend);
                             }
                             processedBatches.add(currentBatch);
                             if (currentBatch.getStatus() != Status.OK) {
@@ -632,7 +671,9 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                             if (transferInfo != null && transferInfo.getStatus() != ProcessStatus.OK) {
                                 transferInfo.setStatus(ProcessStatus.ERROR);
                             }
-                            if (e instanceof ExecutionException) {
+                            if (ExceptionUtils.is(e, BadPaddingException.class, IllegalBlockSizeException.class)) {
+                                throw new ProtocolException(e);
+                            } else if (e instanceof ExecutionException) {
                                 if (isNotBlank(e.getMessage()) && e.getMessage().contains("string truncation")) {
                                     throw new RuntimeException(
                                             "There is a good chance that the truncation error you are receiving is because contains_big_lobs on the '"
@@ -730,7 +771,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
         extractInfo.setCurrentLoadId(extractBatch.getLoadId());
         extractInfo.setTotalDataCount(extractBatch.getDataRowCount());
         FutureOutgoingBatch outgoingBatch = new FutureOutgoingBatch(extractBatch, false);
-        final long maxBytesToSync = parameterService.getLong(ParameterConstants.TRANSPORT_MAX_BYTES_TO_SYNC);
+        final long maxBytesToSync = getTransportMaxBytesToSync();
         final boolean streamToFileEnabled = parameterService.is(ParameterConstants.STREAM_TO_FILE_ENABLED);
         if (!status.shouldExtractSkip) {
             if (extractBatch.isExtractJobFlag() && extractBatch.getStatus() != Status.IG) {
@@ -761,16 +802,17 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                     outgoingBatch = new FutureOutgoingBatch(
                             extractOutgoingBatch(extractInfo, targetNode, dataWriter, extractBatch, streamToFileEnabled, true, mode, null),
                             isRetry);
-                    status.batchExtractCount++;
-                    status.byteExtractCount += extractBatch.getByteCount();
-                    if (status.byteExtractCount >= maxBytesToSync && status.batchExtractCount < activeBatches.size()) {
+                    if (status.byteExtractCount != 0 && status.byteExtractCount + extractBatch.getByteCount() >= maxBytesToSync) {
                         log.info(
                                 "Reached the total byte threshold after {} of {} batches were extracted for node '{}' (extracted {} bytes, the max is {}).  "
                                         + "The remaining batches will be extracted on a subsequent sync.",
                                 new Object[] { status.batchExtractCount, activeBatches.size(), targetNode.getNodeId(), status.byteExtractCount,
                                         maxBytesToSync });
-                        status.shouldExtractSkip = true;
+                        status.shouldExtractSkip = outgoingBatch.isExtractSkipped = true;
+                        changeBatchStatus(Status.NE, extractBatch, mode);
                     }
+                    status.batchExtractCount++;
+                    status.byteExtractCount += extractBatch.getByteCount();
                 } catch (Exception e) {
                     status.shouldExtractSkip = outgoingBatch.isExtractSkipped = true;
                     throw e;
@@ -801,7 +843,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
             long batchStatusUpdateMillis = parameterService.getLong(ParameterConstants.OUTGOING_BATCH_UPDATE_STATUS_MILLIS);
             int batchStatusUpdateDataCount = parameterService.getInt(ParameterConstants.OUTGOING_BATCH_UPDATE_STATUS_DATA_COUNT);
             Channel channel = configurationService.getChannel(currentBatch.getChannelId());
-            if (currentBatch.getStatus() == Status.RQ ||
+            if (currentBatch.getStatus() == Status.RQ || currentBatch.getStatus() == Status.NE ||
                     currentBatch.getStatus() == Status.LD ||
                     currentBatch.getLastUpdatedTime() == null ||
                     System.currentTimeMillis() - batchStatusUpdateMillis >= currentBatch.getLastUpdatedTime().getTime() ||
@@ -840,15 +882,18 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
             long extractTimeInMs = 0l;
             long byteCount = 0l;
             long transformTimeInMs = 0l;
+            boolean isClusterLocalStaging = parameterService.is(ParameterConstants.CLUSTER_LOCKING_ENABLED) &&
+                    !parameterService.is(ParameterConstants.CLUSTER_STAGING_ENABLED);
+            boolean isPreviouslyExtracted = false;
             if (currentBatch.getStatus() == Status.IG) {
                 cleanupIgnoredBatch(sourceNode, targetNode, currentBatch, writer);
-            } else if (currentBatch.getStatus() == Status.RQ || !isPreviouslyExtracted(currentBatch, false)) {
+            } else if (currentBatch.getStatus() == Status.RQ || !(isPreviouslyExtracted = isPreviouslyExtracted(currentBatch, false))) {
                 BatchLock lock = null;
                 try {
                     log.debug("{} attempting to acquire lock for batch {}", targetNode.getNodeId(), currentBatch.getBatchId());
                     lock = acquireLock(currentBatch, useStagingDataWriter);
                     log.debug("{} acquired lock for batch {}", targetNode.getNodeId(), currentBatch.getBatchId());
-                    if (currentBatch.getStatus() == Status.RQ || !isPreviouslyExtracted(currentBatch, true)) {
+                    if (currentBatch.getStatus() == Status.RQ || !(isPreviouslyExtracted = isPreviouslyExtracted(currentBatch, true))) {
                         log.debug("{} extracting batch {}", targetNode.getNodeId(), currentBatch.getBatchId());
                         currentBatch.setExtractCount(currentBatch.getExtractCount() + 1);
                         if (currentBatch.getExtractStartTime() == null) {
@@ -888,6 +933,13 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                                 writer = wrapWithTransformWriter(sourceNode, targetNode, extractInfo, dataWriter, useStagingDataWriter);
                                 new DataProcessor(dataReader, writer, listener, "extract").process(ctx);
                             } else {
+                                currentBatch.setStatus(Status.ER);
+                                currentBatch.setErrorFlag(true);
+                                currentBatch.setSqlMessage(ExceptionUtils.unwrapMessages(e));
+                                outgoingBatchService.updateOutgoingBatch(currentBatch);
+                                if (currentBatch.isLoadFlag()) {
+                                    dataService.updateTableReloadStatusFailed(currentBatch.getLoadId(), sourceNode.getNodeId(), currentBatch.getBatchId());
+                                }
                                 throw e;
                             }
                         }
@@ -912,10 +964,11 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                                 statisticManager.incrementDataBytesSent(currentBatch.getChannelId(), byteCount);
                                 statisticManager.incrementDataSent(currentBatch.getChannelId(), stats.get(DataWriterStatisticConstants.ROWCOUNT));
                             }
-                            if (currentBatch.isCommonFlag()) {
+                            if (currentBatch.isCommonFlag() && !isClusterLocalStaging) {
                                 outgoingBatchService.updateCommonBatchExtractStatistics(currentBatch);
                             }
                         }
+                        log.debug("Extracted batch {} has {} bytes", currentBatch.getNodeBatchId(), currentBatch.getByteCount());
                     }
                 } catch (RuntimeException ex) {
                     IStagedResource resource = getStagedResource(currentBatch);
@@ -936,6 +989,12 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                     }
                 }
             }
+            if (isPreviouslyExtracted) {
+                log.debug("Previously extracted batch {} has {} bytes", currentBatch.getNodeBatchId(), currentBatch.getByteCount());
+            }
+            if (currentBatch.isCommonFlag() && isClusterLocalStaging && isPreviouslyExtracted) {
+                updateCommonBatchExtractStatistics(currentBatch);
+            }
             if (updateBatchStatistics) {
                 currentBatch = requeryIfEnoughTimeHasPassed(ts, currentBatch);
                 if (extractTimeInMs > 0) {
@@ -954,7 +1013,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                         currentBatch.setDataInsertRowCount(currentBatch.getExtractInsertRowCount());
                     }
                     ExtractRequest extractRequest = getExtractRequestForBatch(currentBatch);
-                    if (extractRequest != null) {
+                    if (extractRequest != null && extractRequest.getStatus() != ExtractStatus.OK) {
                         sqlTemplate.update(getSql("updateExtractRequestStatus"), ExtractStatus.OK.name(), new Date(),
                                 currentBatch.getExtractRowCount(), currentBatch.getExtractMillis(), extractRequest.getRequestId());
                         checkSendDeferredConstraints(extractRequest, null, targetNode);
@@ -963,6 +1022,22 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
             }
         }
         return currentBatch;
+    }
+
+    protected void updateCommonBatchExtractStatistics(OutgoingBatch currentBatch) {
+        OutgoingBatch firstBatch = outgoingBatchService.findOutgoingBatchFirstCommon(currentBatch.getBatchId());
+        if (firstBatch != null) {
+            currentBatch.setByteCount(firstBatch.getByteCount());
+            currentBatch.setDataRowCount(firstBatch.getDataRowCount());
+            currentBatch.setDataInsertRowCount(firstBatch.getDataInsertRowCount());
+            currentBatch.setDataUpdateRowCount(firstBatch.getDataUpdateRowCount());
+            currentBatch.setDataDeleteRowCount(firstBatch.getDataDeleteRowCount());
+            currentBatch.setOtherRowCount(firstBatch.getOtherRowCount());
+            currentBatch.setExtractRowCount(firstBatch.getExtractRowCount());
+            currentBatch.setExtractInsertRowCount(firstBatch.getExtractInsertRowCount());
+            currentBatch.setExtractUpdateRowCount(firstBatch.getExtractUpdateRowCount());
+            currentBatch.setExtractDeleteRowCount(firstBatch.getExtractDeleteRowCount());
+        }
     }
 
     protected String getSemaphoreKey(OutgoingBatch batch, boolean useStagingDataWriter) {
@@ -1008,6 +1083,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
         return lock;
     }
 
+    @Override
     public StagingFileLock acquireStagingFileLock(OutgoingBatch batch) {
         boolean stagingFileAcquired = false;
         StagingFileLock fileLock = null;
@@ -1088,7 +1164,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                 new Class[] { ISymmetricEngine.class, OutgoingBatch.class, Node.class, Node.class, ProcessInfo.class, boolean.class });
         IExtractDataReaderFactory factory = AppUtils.newInstance(IExtractDataReaderFactory.class, ExtractDataReaderFactory.class,
                 new Object[] { engine }, new Class[] { ISymmetricEngine.class });
-        return factory.getReader(platform, source, sourceNode, targetNode);
+        return factory.getReader(platform, source, sourceNode, targetNode, engine.getSymmetricDialect().getTargetPlatform());
     }
 
     protected Statistics getExtractStats(IDataWriter writer, OutgoingBatch currentBatch) {
@@ -1147,6 +1223,10 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
             writer.end(batch, false);
         } finally {
             writer.close();
+            IStagedResource resource = getStagedResource(currentBatch);
+            if (resource != null) {
+                resource.setState(State.DONE);
+            }
         }
     }
 
@@ -1171,7 +1251,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
     }
 
     protected boolean isRetry(OutgoingBatch currentBatch, Node remoteNode) {
-        if (currentBatch.getSentCount() > 0 && currentBatch.getStatus() != OutgoingBatch.Status.RS) {
+        if (currentBatch.getSentCount() > 0 && currentBatch.getStatus() != OutgoingBatch.Status.RS && currentBatch.getStatus() != OutgoingBatch.Status.IG) {
             boolean offline = parameterService.is(ParameterConstants.NODE_OFFLINE, false);
             boolean cclient = StringUtils.equals(remoteNode.getDeploymentType(), Constants.DEPLOYMENT_TYPE_CCLIENT);
             if (remoteNode.isVersionGreaterThanOrEqualTo(3, 8, 0) && !offline && !cclient) {
@@ -1234,6 +1314,16 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                                         throw new RuntimeException(e);
                                     }
                                 }
+                            }
+                        }
+                    } else if (!isRetry && engine.getConfigurationService().isUseSourceStagingEnabled(targetNode.getNodeId()) &&
+                            currentBatch.getStatus() != OutgoingBatch.Status.IG) {
+                        ISymmetricEngine targetEngine = AbstractSymmetricEngine.findEngineByNodeId(targetNode.getNodeId());
+                        if (targetEngine != null) {
+                            isRetry = true;
+                            if (currentBatch.getSentCount() == 1) {
+                                statisticManager.incrementDataSent(currentBatch.getChannelId(), currentBatch.getDataRowCount());
+                                statisticManager.incrementDataBytesSent(currentBatch.getChannelId(), extractedBatch.getFile().length());
                             }
                         }
                     }
@@ -1397,23 +1487,13 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
     }
 
     @Override
-    public List<ExtractRequest> getPendingTablesForExtractByLoadId(long loadId) {
-        return sqlTemplate.query(getSql("selectIncompleteTablesForExtractByLoadId"), new ExtractRequestMapper(), loadId, engine.getNodeId());
+    public List<ExtractRequest> getTablesForExtractByLoadId(long loadId) {
+        return sqlTemplate.query(getSql("selectTablesForExtractByLoadId"), new ExtractRequestMapper(), loadId, engine.getNodeId());
     }
 
     @Override
-    public List<ExtractRequest> getCompletedTablesForExtractByLoadId(long loadId) {
-        return sqlTemplate.query(getSql("selectCompletedTablesForExtractByLoadId"), new ExtractRequestMapper(), loadId, engine.getNodeId());
-    }
-
-    @Override
-    public List<ExtractRequest> getPendingTablesForExtractByLoadIdAndNodeId(long loadId, String nodeId) {
-        return sqlTemplate.query(getSql("selectIncompleteTablesForExtractByLoadIdAndNodeId"), new ExtractRequestMapper(), loadId, nodeId);
-    }
-
-    @Override
-    public List<ExtractRequest> getCompletedTablesForExtractByLoadIdAndNodeId(long loadId, String nodeId) {
-        return sqlTemplate.query(getSql("selectCompletedTablesForExtractByLoadIdAndNodeId"), new ExtractRequestMapper(), loadId, nodeId);
+    public List<ExtractRequest> getTablesForExtractByLoadIdAndNodeId(long loadId, String nodeId) {
+        return sqlTemplate.query(getSql("selectTablesForExtractByLoadIdAndNodeId"), new ExtractRequestMapper(), loadId, nodeId);
     }
 
     @Override
@@ -1421,7 +1501,8 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
         if (platform.supportsParametersInSelect()) {
             transaction.prepareAndExecute(getSql("updateExtractRequestLoadTime"), outgoingBatch.getBatchId(), new Date(),
                     outgoingBatch.getReloadRowCount() > 0 ? outgoingBatch.getDataRowCount() : 0,
-                    outgoingBatch.getLoadMillis(), outgoingBatch.getBatchId(), new Date(), outgoingBatch.getBatchId(),
+                    outgoingBatch.getLoadMillis(), outgoingBatch.getBatchId(), new Date(), outgoingBatch.isBulkLoaderFlag() == true ? outgoingBatch
+                            .getLoadRowCount() : 0, outgoingBatch.getBatchId(),
                     outgoingBatch.getBatchId(), outgoingBatch.getNodeId(), outgoingBatch.getLoadId(), engine.getNodeId());
         } else {
             String sql = getSql("updateExtractRequestLoadTimeNoParamsInSelect");
@@ -1429,14 +1510,22 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
             sql = FormatUtils.replace("rowCount",
                     String.valueOf(outgoingBatch.getReloadRowCount() > 0 ? outgoingBatch.getDataRowCount() : 0), sql);
             sql = FormatUtils.replace("loadMillis", String.valueOf(outgoingBatch.getLoadMillis()), sql);
+            sql = FormatUtils.replace("bulkRowsLoaded",
+                    String.valueOf(outgoingBatch.isBulkLoaderFlag() == true ? (outgoingBatch.getReloadRowCount() > 0 ? outgoingBatch.getDataRowCount() : 0)
+                            : 0), sql);
             transaction.prepareAndExecute(sql, outgoingBatch.getBatchId(), new Date(), outgoingBatch.getBatchId(),
                     outgoingBatch.getBatchId(), outgoingBatch.getNodeId(), outgoingBatch.getLoadId(), engine.getNodeId());
         }
         TableReloadStatus status = dataService.updateTableReloadStatusDataLoaded(transaction,
                 outgoingBatch.getLoadId(), engine.getNodeId(), outgoingBatch.getBatchId(), 1, outgoingBatch.isBulkLoaderFlag());
-        if (status != null && status.isFullLoad() && (status.isCancelled() || status.isCompleted())) {
-            log.info("Initial load ended for node {}", outgoingBatch.getNodeId());
-            nodeService.setInitialLoadEnded(transaction, outgoingBatch.getNodeId());
+        if (status != null && (status.isCancelled() || status.isCompleted())) {
+            if (status.isFullLoad()) {
+                log.info("Initial load ended for node {}, load ID {}", outgoingBatch.getNodeId(), status.getLoadId());
+                nodeService.setInitialLoadEnded(transaction, outgoingBatch.getNodeId());
+            } else {
+                log.info("Partial load ended for node {}, load ID {}", outgoingBatch.getNodeId(), status.getLoadId());
+                nodeService.setPartialLoadEnded(transaction, outgoingBatch.getNodeId());
+            }
         }
     }
 
@@ -1472,7 +1561,8 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
 
     @Override
     public int cancelExtractRequests(long loadId) {
-        return sqlTemplate.update(getSql("cancelExtractRequests"), ExtractStatus.OK.name(), new Date(), loadId, engine.getNodeId(), ExtractStatus.OK.name());
+        Date date = new Date();
+        return sqlTemplate.update(getSql("cancelExtractRequests"), ExtractStatus.OK.name(), date, date, loadId, engine.getNodeId(), ExtractStatus.OK.name());
     }
 
     protected boolean writeBatchStats(BufferedWriter writer, char[] buffer, int bufferSize, String prevBuffer, OutgoingBatch batch)
@@ -1520,6 +1610,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                 String.valueOf(batch.getExtractDeleteRowCount()), String.valueOf(batch.getFailedDataId()) }, ',');
     }
 
+    @Override
     public boolean extractBatchRange(Writer writer, String nodeId, long startBatchId,
             long endBatchId) {
         boolean foundBatch = false;
@@ -1548,6 +1639,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
         return foundBatch;
     }
 
+    @Override
     public boolean extractBatchRange(Writer writer, String nodeId, Date startBatchTime,
             Date endBatchTime, String... channelIds) {
         boolean foundBatch = false;
@@ -1590,15 +1682,23 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
         return transformExtractWriter;
     }
 
+    @Override
     public RemoteNodeStatuses queueWork(boolean force) {
         final RemoteNodeStatuses statuses = new RemoteNodeStatuses(configurationService.getChannels(false));
         Node identity = nodeService.findIdentity();
         if (identity != null) {
             if (force || clusterService.lock(ClusterConstants.INITIAL_LOAD_EXTRACT)) {
                 try {
+                    updateExtractRequestsForThreading();
                     List<NodeQueuePair> nodes = getExtractRequestNodes();
                     for (NodeQueuePair pair : nodes) {
-                        queue(pair.getNodeId(), pair.getQueue(), statuses);
+                        if (pair.getQueue().equals(Constants.QUEUE_RELOAD)) {
+                            if (pair.getExtractThreadId() != null) {
+                                queue(pair.getNodeId(), pair.getQueue() + Constants.DELIMITER_QUEUE_THREAD + pair.getExtractThreadId(), statuses);
+                            }
+                        } else {
+                            queue(pair.getNodeId(), pair.getQueue(), statuses);
+                        }
                     }
                 } finally {
                     if (!force) {
@@ -1626,9 +1726,76 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                 ExtractStatus.NE.name(), engine.getNodeId());
     }
 
+    protected void updateExtractRequestsForThreading() {
+        Map<String, Channel> channelMap = configurationService.getChannels(false);
+        Channel reloadChannel = channelMap != null ? channelMap.get(Constants.CHANNEL_RELOAD) : null;
+        if (reloadChannel != null && reloadChannel.getQueue().equals(Constants.QUEUE_RELOAD)) {
+            List<ExtractRequest> extractRequests = getExtractRequestsForThreading();
+            IReloadQueueThreadAssigner assigner = engine.getExtensionService().getExtensionPoint(IReloadQueueThreadAssigner.class);
+            if (assigner != null) {
+                Collection<ExtractRequest> requestsToUpdate = assigner.assignThreadsToExtractRequests(extractRequests, reloadChannel);
+                updateExtractRequestsForThreading(requestsToUpdate);
+            } else if (!extractRequests.isEmpty()) {
+                log.info("Found {} extract requests to assign threads for extract and load", extractRequests.size());
+                for (ExtractRequest extractRequest : extractRequests) {
+                    extractRequest.setExtractThreadId(0);
+                    extractRequest.setLoadThreadId(0);
+                }
+                updateExtractRequestsForThreading(extractRequests);
+            }
+        }
+    }
+
+    protected List<ExtractRequest> getExtractRequestsForThreading() {
+        return sqlTemplate.query(getSql("selectExtractRequestsForThreadingSql"), new ExtractRequestMapper(), engine.getNodeId(), Constants.QUEUE_RELOAD,
+                ExtractStatus.NE.name(), ExtractStatus.OK.name());
+    }
+
+    protected void updateExtractRequestsForThreading(Collection<ExtractRequest> extractRequests) {
+        String sourceNodeId = engine.getNodeId();
+        TableReloadStatus reloadStatus = null;
+        ISqlTransaction transaction = null;
+        try {
+            transaction = sqlTemplate.startSqlTransaction();
+            for (ExtractRequest request : extractRequests) {
+                if (request.getStatus() == ExtractStatus.NE && (reloadStatus == null || reloadStatus.getLoadId() != request.getLoadId())) {
+                    reloadStatus = dataService.getTableReloadStatusByLoadIdAndSourceNodeId(request.getLoadId(), sourceNodeId);
+                    if (reloadStatus.getRowsLoaded() == 0) {
+                        log.info("Assigning load ID {} system {} tables to thread 0", request.getLoadId(), engine.getParameterService().getTablePrefix());
+                        transaction.prepareAndExecute(getSql("updateOutgoingBatchesForSetupThreadSql"), new Object[] { 0, request.getLoadId(),
+                                engine.getParameterService().getTablePrefix().toLowerCase() + "%" }, new int[] { Types.INTEGER,
+                                        symmetricDialect.getSqlTypeForIds(), Types.VARCHAR });
+                    }
+                }
+                transaction.prepareAndExecute(getSql("updateExtractRequestsThreadsSql"), new Object[] { request.getExtractThreadId(), request.getLoadThreadId(),
+                        request.getRequestId() }, new int[] { Types.INTEGER, Types.INTEGER, symmetricDialect.getSqlTypeForIds() });
+                if (request.getLoadThreadId() != null) {
+                    transaction.prepareAndExecute(getSql("updateOutgoingBatchesForThreadSql"), new Object[] { request.getLoadThreadId(), request.getLoadId(),
+                            request.getStartBatchId(), request.getEndBatchId(), request.getStartBatchId(), request.getTableName().toLowerCase() },
+                            new int[] { Types.INTEGER, symmetricDialect.getSqlTypeForIds(), symmetricDialect.getSqlTypeForIds(),
+                                    symmetricDialect.getSqlTypeForIds(), symmetricDialect.getSqlTypeForIds(), Types.VARCHAR });
+                }
+            }
+            transaction.commit();
+        } catch (Error ex) {
+            if (transaction != null) {
+                transaction.rollback();
+            }
+            throw ex;
+        } catch (RuntimeException ex) {
+            if (transaction != null) {
+                transaction.rollback();
+            }
+            throw ex;
+        } finally {
+            close(transaction);
+        }
+    }
+
     private static class NodeQueuePair {
         private String nodeId;
         private String queue;
+        private Integer extractThreadId;
 
         public String getNodeId() {
             return nodeId;
@@ -1645,6 +1812,14 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
         public void setQueue(String queue) {
             this.queue = queue;
         }
+
+        public Integer getExtractThreadId() {
+            return extractThreadId;
+        }
+
+        public void setExtractThreadId(Integer extractThreadId) {
+            this.extractThreadId = extractThreadId;
+        }
     }
 
     static class NodeQueuePairMapper implements ISqlRowMapper<NodeQueuePair> {
@@ -1653,13 +1828,17 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
             NodeQueuePair pair = new NodeQueuePair();
             pair.setNodeId(row.getString("node_id"));
             pair.setQueue(row.getString("queue"));
+            pair.setExtractThreadId(row.getInteger("extract_thread_id"));
             return pair;
         }
     }
 
-    protected List<ExtractRequest> getExtractRequestsForNode(NodeCommunication nodeCommunication) {
-        return sqlTemplate.query(getSql("selectExtractRequestForNodeSql"),
-                new ExtractRequestMapper(), nodeCommunication.getNodeId(), nodeCommunication.getQueue(),
+    protected List<ExtractRequest> getExtractRequestsForNode(NodeCommunication nodeCommunication, String queue, QueueThread queueThread) {
+        if (queueThread.isUsingThreading()) {
+            return sqlTemplate.query(getSql("selectExtractRequestForNodeThreadSql"), new ExtractRequestMapper(), nodeCommunication.getNodeId(), queue,
+                    queueThread.getThreadId(), ExtractRequest.ExtractStatus.NE.name(), engine.getNodeId());
+        }
+        return sqlTemplate.query(getSql("selectExtractRequestForNodeSql"), new ExtractRequestMapper(), nodeCommunication.getNodeId(), queue,
                 ExtractRequest.ExtractStatus.NE.name(), engine.getNodeId());
     }
 
@@ -1668,11 +1847,16 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                 new ExtractRequestMapper(), batch.getBatchId(), batch.getBatchId(), batch.getNodeId(), batch.getLoadId(), engine.getNodeId());
     }
 
-    protected Map<Long, List<ExtractRequest>> getExtractChildRequestsForNode(NodeCommunication nodeCommunication, List<ExtractRequest> parentRequests) {
+    protected Map<Long, List<ExtractRequest>> getExtractChildRequestsForNode(NodeCommunication nodeCommunication, String queue, QueueThread queueThread) {
         Map<Long, List<ExtractRequest>> requests = new HashMap<Long, List<ExtractRequest>>();
-        List<ExtractRequest> childRequests = sqlTemplate.query(getSql("selectExtractChildRequestForNodeSql"),
-                new ExtractRequestMapper(), nodeCommunication.getNodeId(), nodeCommunication.getQueue(),
-                ExtractRequest.ExtractStatus.NE.name(), engine.getNodeId());
+        List<ExtractRequest> childRequests = null;
+        if (queueThread.isUsingThreading()) {
+            childRequests = sqlTemplate.query(getSql("selectExtractChildRequestForNodeThreadSql"), new ExtractRequestMapper(), nodeCommunication.getNodeId(),
+                    queue, queueThread.getThreadId(), ExtractRequest.ExtractStatus.NE.name(), engine.getNodeId());
+        } else {
+            childRequests = sqlTemplate.query(getSql("selectExtractChildRequestForNodeSql"), new ExtractRequestMapper(), nodeCommunication.getNodeId(),
+                    queue, ExtractRequest.ExtractStatus.NE.name(), engine.getNodeId());
+        }
         for (ExtractRequest childRequest : childRequests) {
             List<ExtractRequest> childList = requests.get(childRequest.getParentRequestId());
             if (childList == null) {
@@ -1713,6 +1897,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
         }
     }
 
+    @Override
     public ExtractRequest requestExtractRequest(ISqlTransaction transaction, String nodeId, String queue,
             TriggerRouter triggerRouter, long startBatchId, long endBatchId, long loadId, String table, long rows, long parentRequestId) {
         long requestId = 0;
@@ -1755,30 +1940,30 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
     /**
      * This is a callback method used by the NodeCommunicationService that extracts an initial load in the background.
      */
+    @Override
     public void execute(NodeCommunication nodeCommunication, RemoteNodeStatus status) {
         if (!isApplicable(nodeCommunication)) {
             log.debug("{} failed isApplicable check and will not run.", this);
             return;
         }
-        List<ExtractRequest> requests = getExtractRequestsForNode(nodeCommunication);
+        QueueThread queueThread = new QueueThread(nodeCommunication.getQueue());
+        String queue = queueThread.getQueueName();
+        List<ExtractRequest> requests = getExtractRequestsForNode(nodeCommunication, queue, queueThread);
         Map<Long, List<ExtractRequest>> allChildRequests = null;
         long ts = System.currentTimeMillis();
         if (requests.size() > 0) {
-            allChildRequests = getExtractChildRequestsForNode(nodeCommunication, requests);
+            allChildRequests = getExtractChildRequestsForNode(nodeCommunication, queue, queueThread);
         }
-        /*
-         * Process extract requests until it has taken longer than 30 seconds, and then allow the process to return so progress status can be seen.
-         */
-        for (int i = 0; i < requests.size()
-                && (System.currentTimeMillis() - ts) <= Constants.LONG_OPERATION_THRESHOLD; i++) {
+        long maxProcessTime = parameterService.getLong(ParameterConstants.INITIAL_LOAD_EXTRACT_MAX_PROCESS_TIME_MS, 3600000);
+        for (int i = 0; i < requests.size() && (System.currentTimeMillis() - ts) <= maxProcessTime; i++) {
             ExtractRequest request = requests.get(i);
             if (!canProcessExtractRequest(request, nodeCommunication.getCommunicationType())) {
                 continue;
             }
             Node identity = nodeService.findIdentity();
             Node targetNode = nodeService.findNode(nodeCommunication.getNodeId(), true);
-            log.info("Starting request {} to extract table {} into batches {} through {} for node {}.",
-                    new Object[] { request.getRequestId(), request.getTableName(), request.getStartBatchId(), request.getEndBatchId(), request.getNodeId() });
+            log.info("Starting request {} to extract table {} into batches {} through {} for node {} on queue {}.", request.getRequestId(),
+                    request.getTableName(), request.getStartBatchId(), request.getEndBatchId(), request.getNodeId(), queue);
             List<OutgoingBatch> batches = outgoingBatchService.getOutgoingBatchRange(request.getStartBatchId(), request.getEndBatchId()).getBatches();
             ProcessInfo processInfo = statisticManager.newProcessInfo(new ProcessInfoKey(identity
                     .getNodeId(), nodeCommunication.getQueue(), nodeCommunication.getNodeId(),
@@ -1813,9 +1998,9 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                             firstBatch, false, false, ExtractMode.FOR_SYM_CLIENT, new ClusterLockRefreshListener(clusterService));
                     checkSendDeferredConstraints(request, childRequests, targetNode);
                 } else {
-                    log.info("Batches already had an OK status for request {} to extract table {} for batches {} through {} for node {}.  Not extracting.",
-                            new Object[] { request.getRequestId(), request.getTableName(), request.getStartBatchId(), request.getEndBatchId(), request
-                                    .getNodeId() });
+                    log.info(
+                            "Batches already had an OK status for request {} to extract table {} for batches {} through {} for node {} on queue {}.  Not extracting.",
+                            request.getRequestId(), request.getTableName(), request.getStartBatchId(), request.getEndBatchId(), request.getNodeId(), queue);
                 }
                 ISqlTransaction transaction = null;
                 try {
@@ -1829,8 +2014,8 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                         }
                     }
                     transaction.commit();
-                    log.info("Done with request {} to extract table {} into batches {} through {} for node {}",
-                            request.getRequestId(), request.getTableName(), request.getStartBatchId(), request.getEndBatchId(), request.getNodeId());
+                    log.info("Done with request {} to extract table {} into batches {} through {} for node {} on queue {}", request.getRequestId(),
+                            request.getTableName(), request.getStartBatchId(), request.getEndBatchId(), request.getNodeId(), queue);
                 } catch (Error ex) {
                     if (transaction != null) {
                         transaction.rollback();
@@ -1847,14 +2032,12 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                 releaseMissedExtractRequests();
                 processInfo.setStatus(ProcessInfo.ProcessStatus.OK);
             } catch (CancellationException ex) {
-                log.info("Interrupted on request {} to extract table {} for batches {} through {} for node {}",
-                        new Object[] { request.getRequestId(), request.getTableName(), request.getStartBatchId(), request.getEndBatchId(), request
-                                .getNodeId() });
+                log.info("Interrupted on request {} to extract table {} for batches {} through {} for node {} on queue {}", request.getRequestId(),
+                        request.getTableName(), request.getStartBatchId(), request.getEndBatchId(), request.getNodeId(), queue);
                 processInfo.setStatus(ProcessInfo.ProcessStatus.OK);
             } catch (RuntimeException ex) {
-                log.warn("Failed on request {} to extract table {} into batches {} through {} for node {}",
-                        new Object[] { request.getRequestId(), request.getTableName(), request.getStartBatchId(), request.getEndBatchId(), request
-                                .getNodeId() });
+                log.warn("Failed on request {} to extract table {} into batches {} through {} for node {} on queue {}", request.getRequestId(),
+                        request.getTableName(), request.getStartBatchId(), request.getEndBatchId(), request.getNodeId(), queue);
                 processInfo.setStatus(ProcessInfo.ProcessStatus.ERROR);
                 if (ex instanceof StagingLowFreeSpace) {
                     log.error("Extract load is disabled because disk is almost full: {}", ex.getMessage());
@@ -1954,6 +2137,7 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
         }
     }
 
+    @Override
     public void releaseMissedExtractRequests() {
         List<Long> requestIds = sqlTemplateDirty.query(getSql("selectExtractChildRequestIdsMissed"), new LongMapper(), Status.NE.name(), Status.OK.name(),
                 engine.getNodeId(), engine.getNodeId());
@@ -1979,14 +2163,16 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
                         for (TriggerHistory history : histories) {
                             Channel channel = configurationService.getChannel(trigger.getReloadChannelId());
                             if (!channel.isFileSyncFlag() && history.getSourceTableName().equalsIgnoreCase(request.getTableName())) {
-                                Data data = new Data(history.getSourceTableName(), DataEventType.CREATE, null, String.valueOf(request.getLoadId()),
-                                        history, trigger.getChannelId(), null, null);
+                                Data data = new Data(history.getSourceTableName(), DataEventType.CREATE, null, null,
+                                        history, trigger.getChannelId(), String.valueOf(request.getLoadId()), null);
                                 data.setNodeList(targetNode.getNodeId());
+                                log.info("Deferred create event for load {} table {} on channel {}", request.getLoadId(), history.getSourceTableName(),
+                                        trigger.getChannelId());
                                 dataService.insertData(data);
                                 if (childRequests != null) {
                                     for (ExtractRequest childRequest : childRequests) {
-                                        data = new Data(history.getSourceTableName(), DataEventType.CREATE, null, String.valueOf(childRequest.getLoadId()),
-                                                history, trigger.getChannelId(), null, null);
+                                        data = new Data(history.getSourceTableName(), DataEventType.CREATE, null, null,
+                                                history, trigger.getChannelId(), String.valueOf(childRequest.getLoadId()), null);
                                         data.setNodeList(childRequest.getNodeId());
                                         dataService.insertData(data);
                                     }
@@ -2010,8 +2196,13 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
 
     protected MultiBatchStagingWriter buildMultiBatchStagingWriter(ExtractRequest request, List<ExtractRequest> childRequests, Node sourceNode,
             Node targetNode, List<OutgoingBatch> batches, ProcessInfo processInfo, Channel channel, boolean isRestarted) {
+        boolean isSingleLocalTarget = false;
+        if (childRequests == null || childRequests.size() == 0) {
+            ISymmetricEngine targetEngine = AbstractSymmetricEngine.findEngineByNodeId(request.getNodeId());
+            isSingleLocalTarget = targetEngine != null;
+        }
         MultiBatchStagingWriter multiBatchStatingWriter = new MultiBatchStagingWriter(engine, request, childRequests, sourceNode.getNodeId(),
-                batches, channel.getMaxBatchSize(), processInfo, isRestarted);
+                batches, channel.getMaxBatchSize(), processInfo, isRestarted, isSingleLocalTarget);
         return multiBatchStatingWriter;
     }
 
@@ -2019,7 +2210,29 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
         return ProcessType.INITIAL_LOAD_EXTRACT_JOB;
     }
 
+    protected long getTransportMaxBytesToSync() {
+        long maxBytesToSync = parameterService.getLong(ParameterConstants.TRANSPORT_MAX_BYTES_TO_SYNC);
+        for (int i = 0; i < backOffCount && maxBytesToSync > BACKOFF_BYTE_THRESHOLD; i++) {
+            maxBytesToSync /= 2;
+        }
+        return maxBytesToSync;
+    }
+
+    @Override
+    public void incrementBackOffCount(String nodeId) {
+        long adjustedMaxBytesToSync = getTransportMaxBytesToSync();
+        if (adjustedMaxBytesToSync > BACKOFF_BYTE_THRESHOLD) {
+            backOffCount++;
+            log.info("Ack missing in response from node {}. The max bytes to sync will be reduced from {} to {} during next attempt.",
+                    nodeId, adjustedMaxBytesToSync, adjustedMaxBytesToSync / 2);
+        } else {
+            log.info("Ack missing in response from node {}. The max bytes to sync of {} cannot be reduced any further.",
+                    nodeId, adjustedMaxBytesToSync);
+        }
+    }
+
     class ExtractRequestMapper implements ISqlRowMapper<ExtractRequest> {
+        @Override
         public ExtractRequest mapRow(Row row) {
             ExtractRequest request = new ExtractRequest();
             request.setNodeId(row.getString("node_id"));
@@ -2046,6 +2259,10 @@ public class DataExtractorService extends AbstractService implements IDataExtrac
             request.setParentRequestId(row.getLong("parent_request_id"));
             request.setExtractedRows(row.getLong("extracted_rows"));
             request.setExtractedMillis(row.getLong("extracted_millis"));
+            request.setLoadedTime(row.getDateTime("loaded_time"));
+            request.setExtractThreadId(row.getInteger("extract_thread_id"));
+            request.setLoadThreadId(row.getInteger("load_thread_id"));
+            request.setNumRowsBulkLoaded(row.getLong("bulk_rows_loaded"));
             return request;
         }
     }

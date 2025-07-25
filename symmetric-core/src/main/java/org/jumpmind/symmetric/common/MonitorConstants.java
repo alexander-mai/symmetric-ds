@@ -61,6 +61,9 @@ public class MonitorConstants {
     public static final String LOB = "lob";
     public static final String STRANDED_OR_EXPIRED_DATA = "strandedOrExpiredData";
     public static final String UNKNOWN_CA = "unknownCa";
+    public static final String INCOMPATIBLE_DATETIME = "incompatibleDatetime";
+    public static final String POSTGRES_WAL = "postgresWal";
+    public static final String JVM_OOM_MONITOR = "jvmOutOfMemoryMonitor";
 
     public static Map<String, String> getMonitorTypesByVersion() {
         Map<String, String> map = new HashMap<String, String>();
@@ -74,6 +77,12 @@ public class MonitorConstants {
                 MAX_DATA_TO_ROUTE, MAX_BATCH_TO_SEND, MAX_CHANNELS, CHANNEL_SUSPEND, MISSING_PRIMARY_KEY, CHANNELS_FOREIGN_KEY, JOB_TRENDING, JOB_ERROR,
                 CONNECTION_POOL, CONNECTION_RESET, LOB, STRANDED_OR_EXPIRED_DATA, UNKNOWN_CA }) {
             map.put(name, "3.15.0");
+        }
+        for (String name : new String[] { INCOMPATIBLE_DATETIME }) {
+            map.put(name, "3.16.2");
+        }
+        for (String name : new String[] { POSTGRES_WAL, JVM_OOM_MONITOR }) {
+            map.put(name, "3.16.5");
         }
         return map;
     }

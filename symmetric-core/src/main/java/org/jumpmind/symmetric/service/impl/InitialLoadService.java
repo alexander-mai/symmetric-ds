@@ -55,6 +55,7 @@ import org.jumpmind.symmetric.service.IInitialLoadService;
 import org.jumpmind.symmetric.service.INodeService;
 import org.jumpmind.symmetric.service.IOutgoingBatchService;
 import org.jumpmind.symmetric.service.ITriggerRouterService;
+import org.jumpmind.util.AppUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -115,10 +116,7 @@ public class InitialLoadService extends AbstractService implements IInitialLoadS
         }
         if (infosToWaitFor.size() > 0) {
             for (int i = 0; i < 10; i++) {
-                try {
-                    Thread.sleep(500l);
-                } catch (InterruptedException e) {
-                }
+                AppUtils.sleep(500l);
                 ListIterator<ProcessInfo> iterator = infosToWaitFor.listIterator();
                 while (iterator.hasNext()) {
                     ProcessInfo p = iterator.next();
@@ -144,6 +142,8 @@ public class InitialLoadService extends AbstractService implements IInitialLoadS
             engine.getDataExtractorService().releaseMissedExtractRequests();
             if (status.isFullLoad()) {
                 engine.getNodeService().setInitialLoadEnded(null, status.getTargetNodeId());
+            } else {
+                engine.getNodeService().setPartialLoadEnded(null, status.getTargetNodeId());
             }
         } else {
             engine.getDataService().updateTableReloadRequestsCancelled(status.getLoadId(), status.getSourceNodeId());
@@ -167,7 +167,7 @@ public class InitialLoadService extends AbstractService implements IInitialLoadS
         for (TableReloadStatus status : statuses) {
             if (!status.isCompleted() && !status.isCancelled()) {
                 TableReloadRequest request = engine.getDataService().getTableReloadRequest(status.getLoadId());
-                if (StringUtils.isBlank(request.getReloadSelect())) {
+                if (request != null && StringUtils.isBlank(request.getReloadSelect())) {
                     cancelLoad(status);
                 }
             }
@@ -212,6 +212,7 @@ public class InitialLoadService extends AbstractService implements IInitialLoadS
                                     request.setCreateTable(parameterService.is(ParameterConstants.INITIAL_LOAD_CREATE_SCHEMA_BEFORE_RELOAD));
                                     request.setDeleteFirst(parameterService.is(ParameterConstants.INITIAL_LOAD_DELETE_BEFORE_RELOAD));
                                     request.setCreateTime(new Date());
+                                    request.setLastUpdateBy(security.getRevInitialLoadCreateBy());
                                     log.info("Creating load request from node " + security.getNodeId() + " to node " + identity.getNodeId());
                                     engine.getDataService().insertTableReloadRequest(request);
                                     processInfo.incrementCurrentDataCount();
@@ -233,6 +234,7 @@ public class InitialLoadService extends AbstractService implements IInitialLoadS
                                     reloadRequest.setCreateTable(parameterService.is(ParameterConstants.INITIAL_LOAD_CREATE_SCHEMA_BEFORE_RELOAD));
                                     reloadRequest.setDeleteFirst(parameterService.is(ParameterConstants.INITIAL_LOAD_DELETE_BEFORE_RELOAD));
                                     reloadRequest.setCreateTime(new Date());
+                                    reloadRequest.setLastUpdateBy(security.getInitialLoadCreateBy());
                                     cancelAllLoadsForTarget(security.getNodeId());
                                     log.info("Creating load request from node " + identity.getNodeId() + " to node " + security.getNodeId());
                                     engine.getDataService().insertTableReloadRequest(reloadRequest);
@@ -451,10 +453,10 @@ public class InitialLoadService extends AbstractService implements IInitialLoadS
                 log.info("Delaying initial load request for node {} until the last routing run is after {}",
                         nodeSecurity.getNodeId(), nodeSecurity.getRegistrationTime());
             } else {
-                int count = engine.getOutgoingBatchService().countOutgoingBatchesUnsent(Constants.CHANNEL_CONFIG);
+                int count = engine.getOutgoingBatchService().countOutgoingBatchesUnsent(Constants.CHANNEL_SYSTEM);
                 if (count > 0) {
                     okayToQueueLoad = false;
-                    log.info("Delaying initial load request for node {} until {} config batches are complete",
+                    log.info("Delaying initial load request for node {} until {} system batches are complete",
                             nodeSecurity.getNodeId(), count);
                 }
             }

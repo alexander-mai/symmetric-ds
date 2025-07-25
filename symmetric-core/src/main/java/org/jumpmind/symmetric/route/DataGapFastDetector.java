@@ -36,6 +36,7 @@ import org.jumpmind.db.sql.ISqlTemplate;
 import org.jumpmind.db.sql.ISqlTransaction;
 import org.jumpmind.db.sql.Row;
 import org.jumpmind.db.sql.SqlException;
+import org.jumpmind.symmetric.SymmetricException;
 import org.jumpmind.symmetric.common.Constants;
 import org.jumpmind.symmetric.common.ContextConstants;
 import org.jumpmind.symmetric.common.ParameterConstants;
@@ -254,6 +255,9 @@ public class DataGapFastDetector extends DataGapDetector implements ISqlRowMappe
                 // if we found data in the gap
                 if (lastDataId != -1 && !lastGap && lastDataId + dataIdIncrementBy <= dataGap.getEndId()) {
                     addDataGap(new DataGap(lastDataId + dataIdIncrementBy, dataGap.getEndId(), currentDate));
+                }
+                if (Thread.interrupted()) {
+                    throw new SymmetricException("Thread received interrupt");
                 }
                 if (System.currentTimeMillis() - printStats > 30000) {
                     checkInterrupted();

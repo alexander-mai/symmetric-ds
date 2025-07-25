@@ -71,13 +71,9 @@ public interface IDataExtractorService {
 
     public StagingFileLock acquireStagingFileLock(OutgoingBatch batch);
 
-    public List<ExtractRequest> getPendingTablesForExtractByLoadId(long loadId);
+    public List<ExtractRequest> getTablesForExtractByLoadId(long loadId);
 
-    public List<ExtractRequest> getCompletedTablesForExtractByLoadId(long loadId);
-
-    public List<ExtractRequest> getPendingTablesForExtractByLoadIdAndNodeId(long loadId, String nodeId);
-
-    public List<ExtractRequest> getCompletedTablesForExtractByLoadIdAndNodeId(long loadId, String nodeId);
+    public List<ExtractRequest> getTablesForExtractByLoadIdAndNodeId(long loadId, String nodeId);
 
     public void updateExtractRequestLoadTime(ISqlTransaction transaction, Date loadTime, OutgoingBatch batch);
 
@@ -89,4 +85,6 @@ public interface IDataExtractorService {
 
     public void updateExtractRequestStatuses(ISqlTransaction transaction, long loadId, String sourceNodeId,
             String fromStatus, String toStatus);
+
+    public void incrementBackOffCount(String nodeId);
 }

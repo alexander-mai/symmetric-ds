@@ -132,6 +132,7 @@ public class DataGapDetectorTest {
         when(statisticManager.newProcessInfo((ProcessInfoKey) any())).thenReturn(new ProcessInfo());
         nodeService = mock(NodeService.class);
         when(nodeService.findIdentity()).thenReturn(new Node(NODE_ID, NODE_GROUP_ID));
+        clusterService = mock(ClusterService.class);
         detector = newGapDetector();
         detector.setFullGapAnalysis(false);
     }
@@ -293,27 +294,26 @@ public class DataGapDetectorTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
     public void testGapInGapFull() throws Exception {
         detector.setFullGapAnalysis(true);
         when(contextService.is(ContextConstants.ROUTING_FULL_GAP_ANALYSIS)).thenReturn(true);
-        String sql = ArgumentMatchers.anyString();
-        @SuppressWarnings("unchecked")
-        ISqlRowMapper<Long> mapper = (ISqlRowMapper<Long>) ArgumentMatchers.any();
-        when(sqlTemplate.query(sql, mapper, (Object[]) ArgumentMatchers.any())).thenAnswer(new Answer<List<Long>>() {
-            public List<Long> answer(InvocationOnMock invocation) {
-                List<Long> dataIds = new ArrayList<Long>();
-                long startId = (Long) invocation.getArguments()[2];
-                long endId = (Long) invocation.getArguments()[3];
-                if (startId == 5 && endId == 10) {
-                    dataIds.add(6L);
-                } else if (startId == 15 && endId == 20) {
-                    dataIds.add(18L);
-                } else if (startId == 21 && endId == 50000020) {
-                    dataIds.add(23L);
-                }
-                return dataIds;
-            }
-        });
+        when(sqlTemplate.query(ArgumentMatchers.any(), ArgumentMatchers.isA(ISqlRowMapper.class), ArgumentMatchers.any(Object[].class))).thenAnswer(
+                new Answer<List<Long>>() {
+                    public List<Long> answer(InvocationOnMock invocation) {
+                        List<Long> dataIds = new ArrayList<Long>();
+                        long startId = (Long) invocation.getArguments()[2];
+                        long endId = (Long) invocation.getArguments()[3];
+                        if (startId == 5 && endId == 10) {
+                            dataIds.add(6L);
+                        } else if (startId == 15 && endId == 20) {
+                            dataIds.add(18L);
+                        } else if (startId == 21 && endId == 50000020) {
+                            dataIds.add(23L);
+                        }
+                        return dataIds;
+                    }
+                });
         List<DataGap> dataGaps = new ArrayList<DataGap>();
         dataGaps.add(new DataGap(3, 3));
         dataGaps.add(new DataGap(5, 10));

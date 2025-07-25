@@ -20,6 +20,7 @@
  */
 package org.jumpmind.symmetric.service;
 
+import java.util.Collection;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +31,7 @@ import org.jumpmind.symmetric.model.NodeGroupLinkAction;
 import org.jumpmind.symmetric.model.OutgoingBatch;
 import org.jumpmind.symmetric.model.OutgoingBatchSummary;
 import org.jumpmind.symmetric.model.OutgoingBatches;
+import org.jumpmind.symmetric.model.ReadyChannels;
 
 /**
  * This service provides an API to access to the outgoing batch table.
@@ -46,6 +48,8 @@ public interface IOutgoingBatchService {
     public void updateAbandonedRoutingBatches();
 
     public OutgoingBatch findOutgoingBatch(long batchId, String nodeId);
+
+    public OutgoingBatch findOutgoingBatchFirstCommon(long batchId);
 
     public OutgoingBatches getOutgoingBatches(String nodeId, boolean includeDisabledChannels);
 
@@ -106,6 +110,8 @@ public interface IOutgoingBatchService {
 
     public int countOutgoingBatchesUnsent();
 
+    public int countOutgoingBatchesUnsentOfflineNodes(String minsBeforeOfflineParam);
+
     public int[] countOutgoingNonSystemBatchesRowsUnsent();
 
     public int countOutgoingBatchesInError(String channelId);
@@ -119,6 +125,8 @@ public interface IOutgoingBatchService {
     public long countUnsentRowsByTargetNode(String nodeId);
 
     public int countUnsentBatchesByTargetNode(String nodeId, boolean includeHeartbeats);
+
+    public Map<String, Long> countUnsentBatchesBlocked();
 
     public List<OutgoingBatchSummary> findOutgoingBatchSummary(OutgoingBatch.Status... statuses);
 
@@ -144,4 +152,10 @@ public interface IOutgoingBatchService {
     public List<Long> getAllBatches();
 
     public List<OutgoingBatch> getBatchesInProgress();
+
+    public Collection<String> getReadyQueues(String nodeId, boolean refreshCache);
+
+    public Map<String, Collection<String>> getReadyQueues(boolean refreshCache);
+
+    public Map<String, ReadyChannels> getReadyChannelsFromDb();
 }

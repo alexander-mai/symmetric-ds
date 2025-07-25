@@ -35,6 +35,7 @@ final public class Constants {
     public static final long VIRTUAL_BATCH_FOR_REGISTRATION = IoConstants.IGNORE_TABLES_BATCH;
     public static final long BATCH_ID_MISSING = -1;
     public static final String NONE_TOKEN = "$(none)";
+    public static final String NULL_TOKEN = "$(null)";
     public static final String DATA_CONTEXT_ENGINE = "engine";
     public static final String DATA_CONTEXT_TARGET_NODE = "targetNode";
     public static final String DATA_CONTEXT_TARGET_NODE_ID = "targetNodeId";
@@ -49,6 +50,7 @@ final public class Constants {
     public static final String STAGING_CATEGORY_INCOMING = "incoming";
     public static final String STAGING_CATEGORY_LOG_MINER = "logminer";
     public static final String STAGING_CATEGORY_BULK_LOAD = "bulkloaddir";
+    public static final String STAGING_CATEGORY_BULK_EXTRACT = "bulkextract";
     public static final String STAGING_CATEGORY_COMPARE = "compare";
     public static final String CLIENT_SPRING_XML = "classpath:/symmetric-client.xml";
     public static final String SERVER_SPRING_XML = "classpath:/symmetric-server.xml";
@@ -77,11 +79,16 @@ final public class Constants {
     public static final String CHANNEL_HEARTBEAT = "heartbeat";
     public static final String CHANNEL_MONITOR = "monitor";
     public static final String CHANNEL_CONFIG = "config";
+    public static final String CHANNEL_SYSTEM = "system";
     public static final String CHANNEL_RELOAD = "reload";
     public static final String CHANNEL_DEFAULT = "default";
     public static final String CHANNEL_FILESYNC = "filesync";
     public static final String CHANNEL_FILESYNC_RELOAD = "filesync_reload";
     public static final String CHANNEL_DYNAMIC = "dynamic";
+    public static final String QUEUE_DEFAULT = "default";
+    public static final String QUEUE_SYSTEM = "system";
+    public static final String QUEUE_RELOAD = "reload";
+    public static final String DELIMITER_QUEUE_THREAD = "!";
     public static final String PUSH_JOB_TIMER = "job.push";
     public static final String PULL_JOB_TIMER = "job.pull";
     public static final String ROUTE_JOB_TIMER = "job.routing";
